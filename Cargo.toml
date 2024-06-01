@@ -1,0 +1,21 @@
+[package]
+name = "ocidir"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cgwalters/ocidir"
+
+[dependencies]
+anyhow = "1.0"
+camino = "1.0.4"
+chrono = "0.4.19"
+olpc-cjson = "0.1.1"
+cap-std-ext = "4.0"
+flate2 = { features = ["zlib"], default_features = false, version = "1.0.20" }
+fn-error-context = "0.2.0"
+hex = "0.4.3"
+openssl = "0.10.33"
+serde = { features = ["derive"], version = "1.0.125" }
+serde_json = "1.0.64"
+tar = "0.4.38"
+oci-spec = "0.6.5"
