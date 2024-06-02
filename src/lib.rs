@@ -23,7 +23,7 @@
 //! println!("{:?}", d.get_manifest()?);
 //! # }
 //! ```
-//! 
+//!
 //! Users of this crate are likely to want to perform low-level manipulations
 //! such as synthesizing tar layers; [`OciDir::push_layer`] for example can
 //! be used for this.
