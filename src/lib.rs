@@ -17,10 +17,12 @@
 //! To access an existing OCI directory:
 //!
 //! ```rust,no_run
+//! # use ocidir::cap_std;
 //! # fn main() -> anyhow::Result<()> {
 //! let d = cap_std::fs::Dir::open_ambient_dir("/path/to/ocidir", cap_std::ambient_authority())?;
-//! let d = ocidir::OciDir::open(&d)?
-//! println!("{:?}", d.get_manifest()?);
+//! let d = ocidir::OciDir::open(&d)?;
+//! println!("{:?}", d.read_manifest()?);
+//! # Ok(())
 //! # }
 //! ```
 //!
