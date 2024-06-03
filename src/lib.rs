@@ -42,7 +42,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use flate2::write::GzEncoder;
 use fn_error_context::context;
 use oci_image::MediaType;
-use oci_spec::image::{self as oci_image, Descriptor};
+use oci_spec::image::{self as oci_image, Descriptor, ImageIndex};
 use olpc_cjson::CanonicalFormatter;
 use openssl::hash::{Hasher, MessageDigest};
 use serde::Serialize;
@@ -118,16 +118,16 @@ impl<'a> Debug for BlobWriter<'a> {
     }
 }
 
-/// Create an OCI layer (also a blob).
-pub struct RawLayerWriter<'a> {
+/// Create an OCI tar+gzip layer.
+pub struct GzipLayerWriter<'a> {
     bw: BlobWriter<'a>,
     uncompressed_hash: Hasher,
     compressor: GzEncoder<Vec<u8>>,
 }
 
-impl<'a> Debug for RawLayerWriter<'a> {
+impl<'a> Debug for GzipLayerWriter<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RawLayerWriter")
+        f.debug_struct("GzipLayerWriter")
             .field("bw", &self.bw)
             .field("compressor", &self.compressor)
             .finish()
@@ -218,17 +218,18 @@ impl OciDir {
         Ok(Self { dir })
     }
 
-    /// Create a writer for a new blob (expected to be a tar stream)
-    pub fn create_raw_layer(&self, c: Option<flate2::Compression>) -> Result<RawLayerWriter> {
-        RawLayerWriter::new(&self.dir, c)
+    /// Create a writer for a new gzip+tar blob; the contents
+    /// are not parsed, but are expected to be a tarball.
+    pub fn create_gzip_layer(&self, c: Option<flate2::Compression>) -> Result<GzipLayerWriter> {
+        GzipLayerWriter::new(&self.dir, c)
     }
 
     /// Create a tar output stream, backed by a blob
     pub fn create_layer(
         &self,
         c: Option<flate2::Compression>,
-    ) -> Result<tar::Builder<RawLayerWriter>> {
-        Ok(tar::Builder::new(self.create_raw_layer(c)?))
+    ) -> Result<tar::Builder<GzipLayerWriter>> {
+        Ok(tar::Builder::new(self.create_gzip_layer(c)?))
     }
 
     /// Add a layer to the top of the image stack.  The firsh pushed layer becomes the root.
@@ -316,6 +317,16 @@ impl OciDir {
             .unwrap())
     }
 
+    /// Read the image index.
+    pub fn read_index(&self) -> Result<Option<ImageIndex>> {
+        let r = if let Some(index) = self.dir.open_optional("index.json")?.map(BufReader::new) {
+            Some(oci_image::ImageIndex::from_reader(index)?)
+        } else {
+            None
+        };
+        Ok(r)
+    }
+
     /// Write a manifest as a blob, and replace the index with a reference to it.
     pub fn insert_manifest(
         &self,
@@ -334,20 +345,22 @@ impl OciDir {
             manifest.set_annotations(Some(annotations));
         }
 
-        let index = self.dir.open_optional("index.json")?.map(BufReader::new);
-        let index =
-            if let Some(mut index) = index.map(oci_image::ImageIndex::from_reader).transpose()? {
-                let mut manifests = index.manifests().clone();
-                manifests.push(manifest.clone());
-                index.set_manifests(manifests);
-                index
-            } else {
-                oci_image::ImageIndexBuilder::default()
-                    .schema_version(oci_image::SCHEMA_VERSION)
-                    .manifests(vec![manifest.clone()])
-                    .build()
-                    .unwrap()
-            };
+        let index = self.read_index()?;
+        let index = if let Some(mut index) = index {
+            let mut manifests = index.manifests().clone();
+            if let Some(tag) = tag {
+                manifests.retain(|d| !Self::descriptor_is_tagged(d, tag));
+            }
+            manifests.push(manifest.clone());
+            index.set_manifests(manifests);
+            index
+        } else {
+            oci_image::ImageIndexBuilder::default()
+                .schema_version(oci_image::SCHEMA_VERSION)
+                .manifests(vec![manifest.clone()])
+                .build()
+                .unwrap()
+        };
 
         self.dir
             .atomic_replace_with("index.json", |mut w| -> Result<()> {
@@ -357,6 +370,19 @@ impl OciDir {
                 Ok(())
             })?;
         Ok(manifest)
+    }
+
+    /// Convenience helper to write the provided config, update the manifest to use it, then call [`insert_manifest`].
+    pub fn insert_manifest_and_config(
+        &self,
+        mut manifest: oci_image::ImageManifest,
+        config: oci_image::ImageConfiguration,
+        tag: Option<&str>,
+        platform: oci_image::Platform,
+    ) -> Result<Descriptor> {
+        let config = self.write_config(config)?;
+        manifest.set_config(config);
+        self.insert_manifest(manifest, tag, platform)
     }
 
     /// Write a manifest as a blob, and replace the index with a reference to it.
@@ -392,6 +418,14 @@ impl OciDir {
         self.read_manifest_and_descriptor().map(|r| r.0)
     }
 
+    fn descriptor_is_tagged(d: &Descriptor, tag: &str) -> bool {
+        d.annotations()
+            .as_ref()
+            .and_then(|annos| annos.get(OCI_TAG_ANNOTATION))
+            .filter(|tagval| tagval.as_str() == tag)
+            .is_some()
+    }
+
     /// Find the manifest with the provided tag
     pub fn find_manifest_with_tag(&self, tag: &str) -> Result<Option<oci_image::ImageManifest>> {
         let f = self
@@ -400,13 +434,7 @@ impl OciDir {
             .context("Failed to open index.json")?;
         let idx: oci_image::ImageIndex = serde_json::from_reader(BufReader::new(f))?;
         for img in idx.manifests() {
-            if img
-                .annotations()
-                .as_ref()
-                .and_then(|annos| annos.get(OCI_TAG_ANNOTATION))
-                .filter(|tagval| tagval.as_str() == tag)
-                .is_some()
-            {
+            if Self::descriptor_is_tagged(img, tag) {
                 return self.read_json_blob(img).map(Some);
             }
         }
@@ -471,7 +499,7 @@ impl<'a> std::io::Write for BlobWriter<'a> {
     }
 }
 
-impl<'a> RawLayerWriter<'a> {
+impl<'a> GzipLayerWriter<'a> {
     /// Create a writer for a gzip compressed layer blob.
     fn new(ocidir: &'a Dir, c: Option<flate2::Compression>) -> Result<Self> {
         let bw = BlobWriter::new(ocidir)?;
@@ -497,7 +525,7 @@ impl<'a> RawLayerWriter<'a> {
     }
 }
 
-impl<'a> std::io::Write for RawLayerWriter<'a> {
+impl<'a> std::io::Write for GzipLayerWriter<'a> {
     fn write(&mut self, srcbuf: &[u8]) -> std::io::Result<usize> {
         self.compressor.get_mut().clear();
         self.compressor.write_all(srcbuf).unwrap();
@@ -556,7 +584,7 @@ mod tests {
     fn test_build() -> Result<()> {
         let td = cap_tempfile::tempdir(cap_std::ambient_authority())?;
         let w = OciDir::ensure(&td)?;
-        let mut layerw = w.create_raw_layer(None)?;
+        let mut layerw = w.create_gzip_layer(None)?;
         layerw.write_all(b"pretend this is a tarball")?;
         let root_layer = layerw.complete()?;
         assert_eq!(
@@ -572,6 +600,7 @@ mod tests {
         let config = w.write_config(config)?;
         manifest.set_config(config);
         w.replace_with_single_manifest(manifest.clone(), oci_image::Platform::default())?;
+        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 1);
 
         let read_manifest = w.read_manifest().unwrap();
         assert_eq!(&read_manifest, &manifest);
@@ -580,10 +609,27 @@ mod tests {
             w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
         // There's more than one now
         assert!(w.read_manifest().is_err());
+        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
+
         assert!(w.find_manifest_with_tag("noent").unwrap().is_none());
         let found_via_tag = w.find_manifest_with_tag("latest").unwrap().unwrap();
         assert_eq!(found_via_tag, read_manifest);
 
+        let mut layerw = w.create_gzip_layer(None)?;
+        layerw.write_all(b"pretend this is an updated tarball")?;
+        let root_layer = layerw.complete()?;
+        let mut manifest = new_empty_manifest().build().unwrap();
+        let mut config = oci_image::ImageConfigurationBuilder::default()
+            .build()
+            .unwrap();
+        w.push_layer(&mut manifest, &mut config, root_layer, "root", None);
+        let _: Descriptor = w.insert_manifest_and_config(
+            manifest,
+            config,
+            Some("latest"),
+            oci_image::Platform::default(),
+        )?;
+        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
         Ok(())
     }
 }
