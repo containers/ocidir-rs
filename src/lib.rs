@@ -42,7 +42,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use flate2::write::GzEncoder;
 use fn_error_context::context;
 use oci_image::MediaType;
-use oci_spec::image::{self as oci_image, Descriptor};
+use oci_spec::image::{self as oci_image, Descriptor, ImageIndex};
 use olpc_cjson::CanonicalFormatter;
 use openssl::hash::{Hasher, MessageDigest};
 use serde::Serialize;
@@ -317,6 +317,16 @@ impl OciDir {
             .unwrap())
     }
 
+    /// Read the image index.
+    pub fn read_index(&self) -> Result<Option<ImageIndex>> {
+        let r = if let Some(index) = self.dir.open_optional("index.json")?.map(BufReader::new) {
+            Some(oci_image::ImageIndex::from_reader(index)?)
+        } else {
+            None
+        };
+        Ok(r)
+    }
+
     /// Write a manifest as a blob, and replace the index with a reference to it.
     pub fn insert_manifest(
         &self,
@@ -335,20 +345,22 @@ impl OciDir {
             manifest.set_annotations(Some(annotations));
         }
 
-        let index = self.dir.open_optional("index.json")?.map(BufReader::new);
-        let index =
-            if let Some(mut index) = index.map(oci_image::ImageIndex::from_reader).transpose()? {
-                let mut manifests = index.manifests().clone();
-                manifests.push(manifest.clone());
-                index.set_manifests(manifests);
-                index
-            } else {
-                oci_image::ImageIndexBuilder::default()
-                    .schema_version(oci_image::SCHEMA_VERSION)
-                    .manifests(vec![manifest.clone()])
-                    .build()
-                    .unwrap()
-            };
+        let index = self.read_index()?;
+        let index = if let Some(mut index) = index {
+            let mut manifests = index.manifests().clone();
+            if let Some(tag) = tag {
+                manifests.retain(|d| !Self::descriptor_is_tagged(d, tag));
+            }
+            manifests.push(manifest.clone());
+            index.set_manifests(manifests);
+            index
+        } else {
+            oci_image::ImageIndexBuilder::default()
+                .schema_version(oci_image::SCHEMA_VERSION)
+                .manifests(vec![manifest.clone()])
+                .build()
+                .unwrap()
+        };
 
         self.dir
             .atomic_replace_with("index.json", |mut w| -> Result<()> {
@@ -393,6 +405,14 @@ impl OciDir {
         self.read_manifest_and_descriptor().map(|r| r.0)
     }
 
+    fn descriptor_is_tagged(d: &Descriptor, tag: &str) -> bool {
+        d.annotations()
+            .as_ref()
+            .and_then(|annos| annos.get(OCI_TAG_ANNOTATION))
+            .filter(|tagval| tagval.as_str() == tag)
+            .is_some()
+    }
+
     /// Find the manifest with the provided tag
     pub fn find_manifest_with_tag(&self, tag: &str) -> Result<Option<oci_image::ImageManifest>> {
         let f = self
@@ -401,13 +421,7 @@ impl OciDir {
             .context("Failed to open index.json")?;
         let idx: oci_image::ImageIndex = serde_json::from_reader(BufReader::new(f))?;
         for img in idx.manifests() {
-            if img
-                .annotations()
-                .as_ref()
-                .and_then(|annos| annos.get(OCI_TAG_ANNOTATION))
-                .filter(|tagval| tagval.as_str() == tag)
-                .is_some()
-            {
+            if Self::descriptor_is_tagged(img, tag) {
                 return self.read_json_blob(img).map(Some);
             }
         }
@@ -573,6 +587,7 @@ mod tests {
         let config = w.write_config(config)?;
         manifest.set_config(config);
         w.replace_with_single_manifest(manifest.clone(), oci_image::Platform::default())?;
+        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 1);
 
         let read_manifest = w.read_manifest().unwrap();
         assert_eq!(&read_manifest, &manifest);
@@ -581,10 +596,25 @@ mod tests {
             w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
         // There's more than one now
         assert!(w.read_manifest().is_err());
+        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
+
         assert!(w.find_manifest_with_tag("noent").unwrap().is_none());
         let found_via_tag = w.find_manifest_with_tag("latest").unwrap().unwrap();
         assert_eq!(found_via_tag, read_manifest);
 
+        let mut layerw = w.create_gzip_layer(None)?;
+        layerw.write_all(b"pretend this is an updated tarball")?;
+        let root_layer = layerw.complete()?;
+        let mut manifest = new_empty_manifest().build().unwrap();
+        let mut config = oci_image::ImageConfigurationBuilder::default()
+            .build()
+            .unwrap();
+        w.push_layer(&mut manifest, &mut config, root_layer, "root", None);
+        let config = w.write_config(config)?;
+        manifest.set_config(config);
+        let _: Descriptor =
+            w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
+        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
         Ok(())
     }
 }
