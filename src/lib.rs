@@ -118,16 +118,16 @@ impl<'a> Debug for BlobWriter<'a> {
     }
 }
 
-/// Create an OCI layer (also a blob).
-pub struct RawLayerWriter<'a> {
+/// Create an OCI tar+gzip layer.
+pub struct GzipLayerWriter<'a> {
     bw: BlobWriter<'a>,
     uncompressed_hash: Hasher,
     compressor: GzEncoder<Vec<u8>>,
 }
 
-impl<'a> Debug for RawLayerWriter<'a> {
+impl<'a> Debug for GzipLayerWriter<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RawLayerWriter")
+        f.debug_struct("GzipLayerWriter")
             .field("bw", &self.bw)
             .field("compressor", &self.compressor)
             .finish()
@@ -218,17 +218,18 @@ impl OciDir {
         Ok(Self { dir })
     }
 
-    /// Create a writer for a new blob (expected to be a tar stream)
-    pub fn create_raw_layer(&self, c: Option<flate2::Compression>) -> Result<RawLayerWriter> {
-        RawLayerWriter::new(&self.dir, c)
+    /// Create a writer for a new gzip+tar blob; the contents
+    /// are not parsed, but are expected to be a tarball.
+    pub fn create_gzip_layer(&self, c: Option<flate2::Compression>) -> Result<GzipLayerWriter> {
+        GzipLayerWriter::new(&self.dir, c)
     }
 
     /// Create a tar output stream, backed by a blob
     pub fn create_layer(
         &self,
         c: Option<flate2::Compression>,
-    ) -> Result<tar::Builder<RawLayerWriter>> {
-        Ok(tar::Builder::new(self.create_raw_layer(c)?))
+    ) -> Result<tar::Builder<GzipLayerWriter>> {
+        Ok(tar::Builder::new(self.create_gzip_layer(c)?))
     }
 
     /// Add a layer to the top of the image stack.  The firsh pushed layer becomes the root.
@@ -471,7 +472,7 @@ impl<'a> std::io::Write for BlobWriter<'a> {
     }
 }
 
-impl<'a> RawLayerWriter<'a> {
+impl<'a> GzipLayerWriter<'a> {
     /// Create a writer for a gzip compressed layer blob.
     fn new(ocidir: &'a Dir, c: Option<flate2::Compression>) -> Result<Self> {
         let bw = BlobWriter::new(ocidir)?;
@@ -497,7 +498,7 @@ impl<'a> RawLayerWriter<'a> {
     }
 }
 
-impl<'a> std::io::Write for RawLayerWriter<'a> {
+impl<'a> std::io::Write for GzipLayerWriter<'a> {
     fn write(&mut self, srcbuf: &[u8]) -> std::io::Result<usize> {
         self.compressor.get_mut().clear();
         self.compressor.write_all(srcbuf).unwrap();
@@ -556,7 +557,7 @@ mod tests {
     fn test_build() -> Result<()> {
         let td = cap_tempfile::tempdir(cap_std::ambient_authority())?;
         let w = OciDir::ensure(&td)?;
-        let mut layerw = w.create_raw_layer(None)?;
+        let mut layerw = w.create_gzip_layer(None)?;
         layerw.write_all(b"pretend this is a tarball")?;
         let root_layer = layerw.complete()?;
         assert_eq!(
