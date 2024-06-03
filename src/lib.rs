@@ -372,6 +372,19 @@ impl OciDir {
         Ok(manifest)
     }
 
+    /// Convenience helper to write the provided config, update the manifest to use it, then call [`insert_manifest`].
+    pub fn insert_manifest_and_config(
+        &self,
+        mut manifest: oci_image::ImageManifest,
+        config: oci_image::ImageConfiguration,
+        tag: Option<&str>,
+        platform: oci_image::Platform,
+    ) -> Result<Descriptor> {
+        let config = self.write_config(config)?;
+        manifest.set_config(config);
+        self.insert_manifest(manifest, tag, platform)
+    }
+
     /// Write a manifest as a blob, and replace the index with a reference to it.
     pub fn replace_with_single_manifest(
         &self,
@@ -610,10 +623,12 @@ mod tests {
             .build()
             .unwrap();
         w.push_layer(&mut manifest, &mut config, root_layer, "root", None);
-        let config = w.write_config(config)?;
-        manifest.set_config(config);
-        let _: Descriptor =
-            w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
+        let _: Descriptor = w.insert_manifest_and_config(
+            manifest,
+            config,
+            Some("latest"),
+            oci_image::Platform::default(),
+        )?;
         assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
         Ok(())
     }
