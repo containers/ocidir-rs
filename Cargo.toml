@@ -4,7 +4,7 @@ description = "A Rust library for reading and writing OCI (opencontainers) layou
 version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/containers/ocidir"
+repository = "https://github.com/containers/ocidir-rs"
 keywords = ["oci", "opencontainers", "docker", "podman", "containers"]
 
 [dependencies]
