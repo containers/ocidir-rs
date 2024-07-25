@@ -58,6 +58,8 @@ pub use oci_spec;
 
 /// Path inside an OCI directory to the blobs
 const BLOBDIR: &str = "blobs/sha256";
+/// Length of a hex-formatted sha256
+const BLOB_SHA256_LEN: usize = 64;
 
 const OCI_TAG_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 
@@ -455,6 +457,36 @@ impl OciDir {
         };
         Ok((self.read_json_blob(&desc)?, desc))
     }
+
+    /// Verify consistency; primarily this checks the sha256 digest in `blobs/sha256`.
+    /// Returns the number of verified objects.
+    pub fn fsck(&self) -> Result<u32> {
+        let mut r = 0;
+        for ent in self.dir.read_dir(BLOBDIR)? {
+            let ent = ent?;
+            let name = ent.file_name();
+            // For now ignore non-blobs
+            if name.len() != BLOB_SHA256_LEN {
+                continue;
+            }
+            let ty = ent.file_type()?;
+            if !ty.is_file() {
+                continue;
+            }
+            let Some(expected_digest) = name.to_str() else {
+                anyhow::bail!("Invalid blob name: {name:?}");
+            };
+            let mut f = ent.open().map(BufReader::new)?;
+            let mut digest = Hasher::new(MessageDigest::sha256())?;
+            std::io::copy(&mut f, &mut digest)?;
+            let found_digest = hex::encode(digest.finish()?);
+            if expected_digest != found_digest {
+                anyhow::bail!("Expected blob digest {expected_digest} but found {found_digest}");
+            }
+            r += 1;
+        }
+        Ok(r)
+    }
 }
 
 impl<'a> BlobWriter<'a> {
@@ -542,6 +574,8 @@ impl<'a> std::io::Write for GzipLayerWriter<'a> {
 
 #[cfg(test)]
 mod tests {
+    use cap_std::fs::OpenOptions;
+
     use super::*;
 
     const MANIFEST_DERIVE: &str = r#"{
@@ -591,6 +625,21 @@ mod tests {
             root_layer.uncompressed_sha256,
             "349438e5faf763e8875b43de4d7101540ef4d865190336c2cc549a11f33f8d7c"
         );
+        assert_eq!(w.fsck().unwrap(), 1);
+        // Also verify that corrupting the object is found
+        {
+            let mut f = w.dir.open_with(
+                format!("blobs/sha256/{}", root_layer.blob.sha256),
+                OpenOptions::new().write(true),
+            )?;
+            let l = f.metadata()?.len();
+            f.seek(std::io::SeekFrom::End(0))?;
+            f.write_all(b"\0")?;
+            assert!(w.fsck().is_err());
+            f.set_len(l)?;
+            assert_eq!(w.fsck().unwrap(), 1);
+        }
+
         let mut manifest = new_empty_manifest().build().unwrap();
         let mut config = oci_image::ImageConfigurationBuilder::default()
             .build()
@@ -601,6 +650,7 @@ mod tests {
         manifest.set_config(config);
         w.replace_with_single_manifest(manifest.clone(), oci_image::Platform::default())?;
         assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 1);
+        assert_eq!(w.fsck().unwrap(), 3);
 
         let read_manifest = w.read_manifest().unwrap();
         assert_eq!(&read_manifest, &manifest);
@@ -630,6 +680,7 @@ mod tests {
             oci_image::Platform::default(),
         )?;
         assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
+        assert_eq!(w.fsck().unwrap(), 6);
         Ok(())
     }
 }
