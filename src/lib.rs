@@ -56,6 +56,8 @@ use std::path::{Path, PathBuf};
 pub use cap_std_ext::cap_std;
 pub use oci_spec;
 
+/// The digest identifier for SHA-256
+const SHA256_NAME: &str = "sha256";
 /// Path inside an OCI directory to the blobs
 const BLOBDIR: &str = "blobs/sha256";
 /// Length of a hex-formatted sha256
@@ -75,7 +77,7 @@ pub struct Blob {
 impl Blob {
     /// The OCI standard checksum-type:checksum
     pub fn digest_id(&self) -> String {
-        format!("sha256:{}", self.sha256)
+        format!("{SHA256_NAME}:{}", self.sha256)
     }
 
     /// Descriptor
@@ -173,7 +175,9 @@ fn empty_config_descriptor() -> oci_image::Descriptor {
     oci_image::DescriptorBuilder::default()
         .media_type(MediaType::ImageConfig)
         .size(7023)
-        .digest("sha256:a5b2b2c507a0944348e0303114d8d93aaaa081732b86451d9bce1f432a537bc7")
+        .digest(format!(
+            "{SHA256_NAME}:a5b2b2c507a0944348e0303114d8d93aaaa081732b86451d9bce1f432a537bc7"
+        ))
         .build()
         .unwrap()
 }
@@ -281,7 +285,7 @@ impl OciDir {
         let mut rootfs = config.rootfs().clone();
         rootfs
             .diff_ids_mut()
-            .push(format!("sha256:{}", layer.uncompressed_sha256));
+            .push(format!("{SHA256_NAME}:{}", layer.uncompressed_sha256));
         config.set_rootfs(rootfs);
         let now = chrono::offset::Utc::now();
         let h = oci_image::HistoryBuilder::default()
@@ -298,7 +302,7 @@ impl OciDir {
             .split_once(':')
             .ok_or_else(|| anyhow!("Invalid digest {}", desc.digest()))?;
         let alg = parse_one_filename(alg)?;
-        if alg != "sha256" {
+        if alg != SHA256_NAME {
             anyhow::bail!("Unsupported digest algorithm {}", desc.digest());
         }
         let hash = parse_one_filename(hash)?;
