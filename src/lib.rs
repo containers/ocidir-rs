@@ -276,6 +276,22 @@ impl OciDir {
         annotations: Option<impl Into<HashMap<String, String>>>,
         description: &str,
     ) {
+        let created = chrono::offset::Utc::now();
+        self.push_layer_full(manifest, config, layer, annotations, description, created)
+    }
+
+    /// Add a layer to the top of the image stack with optional annotations and desired timestamp.
+    ///
+    /// This is otherwise equivalent to [`Self::push_layer_annotated`].
+    pub fn push_layer_full(
+        &self,
+        manifest: &mut oci_image::ImageManifest,
+        config: &mut oci_image::ImageConfiguration,
+        layer: Layer,
+        annotations: Option<impl Into<HashMap<String, String>>>,
+        description: &str,
+        created: chrono::DateTime<chrono::Utc>,
+    ) {
         let mut builder = layer.descriptor().media_type(MediaType::ImageLayerGzip);
         if let Some(annotations) = annotations {
             builder = builder.annotations(annotations);
@@ -287,9 +303,8 @@ impl OciDir {
             .diff_ids_mut()
             .push(format!("{SHA256_NAME}:{}", layer.uncompressed_sha256));
         config.set_rootfs(rootfs);
-        let now = chrono::offset::Utc::now();
         let h = oci_image::HistoryBuilder::default()
-            .created(now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            .created(created.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
             .created_by(description.to_string())
             .build()
             .unwrap();
