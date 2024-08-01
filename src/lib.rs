@@ -145,6 +145,7 @@ pub struct OciDir {
 
 /// Write a serializable data (JSON) as an OCI blob
 #[context("Writing json blob")]
+#[deprecated = "Use OciDir::write_json_blob instead"]
 pub fn write_json_blob<S: serde::Serialize>(
     ocidir: &Dir,
     v: &S,
@@ -218,6 +219,19 @@ impl OciDir {
     pub fn open(dir: &Dir) -> Result<Self> {
         let dir = std::sync::Arc::new(dir.try_clone()?);
         Ok(Self { dir })
+    }
+
+    /// Write a serializable data (JSON) as an OCI blob
+    #[context("Writing json blob")]
+    pub fn write_json_blob<S: serde::Serialize>(
+        &self,
+        v: &S,
+        media_type: oci_image::MediaType,
+    ) -> Result<oci_image::DescriptorBuilder> {
+        // Forward to the legacy implementation; TODO semver for 0.3, drop
+        // the legacy API and move it here.
+        #[allow(deprecated)]
+        write_json_blob(&self.dir, v, media_type)
     }
 
     /// Create a writer for a new gzip+tar blob; the contents
@@ -314,7 +328,8 @@ impl OciDir {
         &self,
         config: oci_image::ImageConfiguration,
     ) -> Result<oci_image::Descriptor> {
-        Ok(write_json_blob(&self.dir, &config, MediaType::ImageConfig)?
+        Ok(self
+            .write_json_blob(&config, MediaType::ImageConfig)?
             .build()
             .unwrap())
     }
@@ -336,7 +351,8 @@ impl OciDir {
         tag: Option<&str>,
         platform: oci_image::Platform,
     ) -> Result<Descriptor> {
-        let mut manifest = write_json_blob(&self.dir, &manifest, MediaType::ImageManifest)?
+        let mut manifest = self
+            .write_json_blob(&manifest, MediaType::ImageManifest)?
             .platform(platform)
             .build()
             .unwrap();
@@ -393,7 +409,8 @@ impl OciDir {
         manifest: oci_image::ImageManifest,
         platform: oci_image::Platform,
     ) -> Result<()> {
-        let manifest = write_json_blob(&self.dir, &manifest, MediaType::ImageManifest)?
+        let manifest = self
+            .write_json_blob(&manifest, MediaType::ImageManifest)?
             .platform(platform)
             .build()
             .unwrap();
