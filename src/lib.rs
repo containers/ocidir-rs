@@ -315,7 +315,7 @@ impl OciDir {
     }
 
     /// Read a JSON blob.
-    pub fn read_json_blob<T: serde::de::DeserializeOwned + Send + 'static>(
+    pub fn read_json_blob<T: serde::de::DeserializeOwned>(
         &self,
         desc: &oci_spec::image::Descriptor,
     ) -> Result<T> {
