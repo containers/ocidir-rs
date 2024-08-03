@@ -238,6 +238,11 @@ impl OciDir {
         write_json_blob(&self.dir, v, media_type)
     }
 
+    /// Create a blob (can be anything).
+    pub fn create_blob(&self) -> Result<BlobWriter> {
+        BlobWriter::new(&self.dir)
+    }
+
     /// Create a writer for a new gzip+tar blob; the contents
     /// are not parsed, but are expected to be a tarball.
     pub fn create_gzip_layer(&self, c: Option<flate2::Compression>) -> Result<GzipLayerWriter> {
