@@ -333,6 +333,23 @@ impl OciDir {
             .map(|f| f.into_std())
     }
 
+    /// Returns `true` if the blob with this digest is already present.
+    pub fn has_blob(&self, desc: &oci_spec::image::Descriptor) -> Result<bool> {
+        let path = Self::parse_descriptor_to_path(desc)?;
+        self.dir.try_exists(&path).map_err(Into::into)
+    }
+
+    /// Returns `true` if the manifest is already present.
+    pub fn has_manifest(&self, desc: &oci_spec::image::Descriptor) -> Result<bool> {
+        let Some(index) = self.read_index()? else {
+            return Ok(false);
+        };
+        Ok(index
+            .manifests()
+            .iter()
+            .any(|m| m.digest().as_str() == desc.digest().as_str()))
+    }
+
     /// Read a JSON blob.
     pub fn read_json_blob<T: serde::de::DeserializeOwned>(
         &self,
@@ -657,11 +674,17 @@ mod tests {
         let mut layerw = w.create_gzip_layer(None)?;
         layerw.write_all(b"pretend this is a tarball")?;
         let root_layer = layerw.complete()?;
+        let root_layer_desc = root_layer
+            .descriptor()
+            .media_type(MediaType::ImageLayerGzip)
+            .build()
+            .unwrap();
         assert_eq!(
             root_layer.uncompressed_sha256,
             "349438e5faf763e8875b43de4d7101540ef4d865190336c2cc549a11f33f8d7c"
         );
         assert_eq!(w.fsck().unwrap(), 1);
+        assert!(w.has_blob(&root_layer_desc).unwrap());
         // Also verify that corrupting the object is found
         {
             let mut f = w.dir.open_with(
@@ -675,6 +698,15 @@ mod tests {
             f.set_len(l)?;
             assert_eq!(w.fsck().unwrap(), 1);
         }
+
+        // Check that we don't find nonexistent blobs
+        assert!(!w
+            .has_blob(&Descriptor::new(
+                MediaType::ImageLayerGzip,
+                root_layer.blob.size.try_into().unwrap(),
+                format!("sha256:{}", root_layer.uncompressed_sha256.as_str())
+            ))
+            .unwrap());
 
         let mut manifest = new_empty_manifest().build().unwrap();
         let mut config = oci_image::ImageConfigurationBuilder::default()
@@ -691,8 +723,9 @@ mod tests {
         let read_manifest = w.read_manifest().unwrap();
         assert_eq!(&read_manifest, &manifest);
 
-        let _: Descriptor =
+        let desc: Descriptor =
             w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
+        assert!(w.has_manifest(&desc).unwrap());
         // There's more than one now
         assert!(w.read_manifest().is_err());
         assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
