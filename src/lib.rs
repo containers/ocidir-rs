@@ -558,6 +558,34 @@ impl<'a> BlobWriter<'a> {
         })
     }
 
+    /// Finish writing this blob, verifying its digest and size against the expected descriptor.
+    #[context("Completing blob")]
+    pub fn complete_verified_as(mut self, descriptor: &Descriptor) -> Result<Blob> {
+        let found_digest = format!("{SHA256_NAME}:{}", hex::encode(self.hash.finish()?));
+        let mut errs = Vec::new();
+        if found_digest.as_str() != descriptor.digest() {
+            errs.push(format!(
+                "Digest mismatch; found={} expected={}",
+                found_digest.as_str(),
+                descriptor.digest()
+            ));
+        }
+        let descriptor_size: u64 = descriptor.size().try_into().unwrap();
+        if self.size != descriptor_size {
+            errs.push(format!(
+                "Size mismatch; found={} expected={}",
+                self.size, descriptor_size
+            ));
+        }
+        match errs.as_slice() {
+            [] => self.complete(),
+            o => {
+                let o = o.join(" and ");
+                anyhow::bail!("{o}")
+            }
+        }
+    }
+
     #[context("Completing blob")]
     /// Finish writing this blob object.
     pub fn complete(mut self) -> Result<Blob> {
