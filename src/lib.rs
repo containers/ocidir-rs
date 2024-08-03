@@ -100,7 +100,7 @@ pub struct Layer {
 impl Layer {
     /// Return the descriptor for this layer
     pub fn descriptor(&self) -> oci_image::DescriptorBuilder {
-        self.blob.descriptor()
+        self.blob.descriptor().media_type(MediaType::ImageLayerGzip)
     }
 }
 
@@ -297,7 +297,7 @@ impl OciDir {
         description: &str,
         created: chrono::DateTime<chrono::Utc>,
     ) {
-        let mut builder = layer.descriptor().media_type(MediaType::ImageLayerGzip);
+        let mut builder = layer.descriptor();
         if let Some(annotations) = annotations {
             builder = builder.annotations(annotations);
         }
@@ -341,7 +341,7 @@ impl OciDir {
     /// Returns `true` if the blob with this digest is already present.
     pub fn has_blob(&self, desc: &oci_spec::image::Descriptor) -> Result<bool> {
         let path = Self::parse_descriptor_to_path(desc)?;
-        self.dir.try_exists(&path).map_err(Into::into)
+        self.dir.try_exists(path).map_err(Into::into)
     }
 
     /// Returns `true` if the manifest is already present.
@@ -679,11 +679,7 @@ mod tests {
         let mut layerw = w.create_gzip_layer(None)?;
         layerw.write_all(b"pretend this is a tarball")?;
         let root_layer = layerw.complete()?;
-        let root_layer_desc = root_layer
-            .descriptor()
-            .media_type(MediaType::ImageLayerGzip)
-            .build()
-            .unwrap();
+        let root_layer_desc = root_layer.descriptor().build().unwrap();
         assert_eq!(
             root_layer.uncompressed_sha256,
             "349438e5faf763e8875b43de4d7101540ef4d865190336c2cc549a11f33f8d7c"
