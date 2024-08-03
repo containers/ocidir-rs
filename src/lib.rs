@@ -56,6 +56,8 @@ use std::path::{Path, PathBuf};
 pub use cap_std_ext::cap_std;
 pub use oci_spec;
 
+/// The digest identifier for SHA-256
+const SHA256_NAME: &str = "sha256";
 /// Path inside an OCI directory to the blobs
 const BLOBDIR: &str = "blobs/sha256";
 /// Length of a hex-formatted sha256
@@ -75,7 +77,7 @@ pub struct Blob {
 impl Blob {
     /// The OCI standard checksum-type:checksum
     pub fn digest_id(&self) -> String {
-        format!("sha256:{}", self.sha256)
+        format!("{SHA256_NAME}:{}", self.sha256)
     }
 
     /// Descriptor
@@ -98,7 +100,7 @@ pub struct Layer {
 impl Layer {
     /// Return the descriptor for this layer
     pub fn descriptor(&self) -> oci_image::DescriptorBuilder {
-        self.blob.descriptor()
+        self.blob.descriptor().media_type(MediaType::ImageLayerGzip)
     }
 }
 
@@ -173,7 +175,9 @@ fn empty_config_descriptor() -> oci_image::Descriptor {
     oci_image::DescriptorBuilder::default()
         .media_type(MediaType::ImageConfig)
         .size(7023)
-        .digest("sha256:a5b2b2c507a0944348e0303114d8d93aaaa081732b86451d9bce1f432a537bc7")
+        .digest(format!(
+            "{SHA256_NAME}:a5b2b2c507a0944348e0303114d8d93aaaa081732b86451d9bce1f432a537bc7"
+        ))
         .build()
         .unwrap()
 }
@@ -234,6 +238,11 @@ impl OciDir {
         write_json_blob(&self.dir, v, media_type)
     }
 
+    /// Create a blob (can be anything).
+    pub fn create_blob(&self) -> Result<BlobWriter> {
+        BlobWriter::new(&self.dir)
+    }
+
     /// Create a writer for a new gzip+tar blob; the contents
     /// are not parsed, but are expected to be a tarball.
     pub fn create_gzip_layer(&self, c: Option<flate2::Compression>) -> Result<GzipLayerWriter> {
@@ -272,7 +281,23 @@ impl OciDir {
         annotations: Option<impl Into<HashMap<String, String>>>,
         description: &str,
     ) {
-        let mut builder = layer.descriptor().media_type(MediaType::ImageLayerGzip);
+        let created = chrono::offset::Utc::now();
+        self.push_layer_full(manifest, config, layer, annotations, description, created)
+    }
+
+    /// Add a layer to the top of the image stack with optional annotations and desired timestamp.
+    ///
+    /// This is otherwise equivalent to [`Self::push_layer_annotated`].
+    pub fn push_layer_full(
+        &self,
+        manifest: &mut oci_image::ImageManifest,
+        config: &mut oci_image::ImageConfiguration,
+        layer: Layer,
+        annotations: Option<impl Into<HashMap<String, String>>>,
+        description: &str,
+        created: chrono::DateTime<chrono::Utc>,
+    ) {
+        let mut builder = layer.descriptor();
         if let Some(annotations) = annotations {
             builder = builder.annotations(annotations);
         }
@@ -281,11 +306,10 @@ impl OciDir {
         let mut rootfs = config.rootfs().clone();
         rootfs
             .diff_ids_mut()
-            .push(format!("sha256:{}", layer.uncompressed_sha256));
+            .push(format!("{SHA256_NAME}:{}", layer.uncompressed_sha256));
         config.set_rootfs(rootfs);
-        let now = chrono::offset::Utc::now();
         let h = oci_image::HistoryBuilder::default()
-            .created(now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            .created(created.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
             .created_by(description.to_string())
             .build()
             .unwrap();
@@ -298,7 +322,7 @@ impl OciDir {
             .split_once(':')
             .ok_or_else(|| anyhow!("Invalid digest {}", desc.digest()))?;
         let alg = parse_one_filename(alg)?;
-        if alg != "sha256" {
+        if alg != SHA256_NAME {
             anyhow::bail!("Unsupported digest algorithm {}", desc.digest());
         }
         let hash = parse_one_filename(hash)?;
@@ -314,8 +338,25 @@ impl OciDir {
             .map(|f| f.into_std())
     }
 
+    /// Returns `true` if the blob with this digest is already present.
+    pub fn has_blob(&self, desc: &oci_spec::image::Descriptor) -> Result<bool> {
+        let path = Self::parse_descriptor_to_path(desc)?;
+        self.dir.try_exists(path).map_err(Into::into)
+    }
+
+    /// Returns `true` if the manifest is already present.
+    pub fn has_manifest(&self, desc: &oci_spec::image::Descriptor) -> Result<bool> {
+        let Some(index) = self.read_index()? else {
+            return Ok(false);
+        };
+        Ok(index
+            .manifests()
+            .iter()
+            .any(|m| m.digest().as_str() == desc.digest().as_str()))
+    }
+
     /// Read a JSON blob.
-    pub fn read_json_blob<T: serde::de::DeserializeOwned + Send + 'static>(
+    pub fn read_json_blob<T: serde::de::DeserializeOwned>(
         &self,
         desc: &oci_spec::image::Descriptor,
     ) -> Result<T> {
@@ -517,6 +558,34 @@ impl<'a> BlobWriter<'a> {
         })
     }
 
+    /// Finish writing this blob, verifying its digest and size against the expected descriptor.
+    #[context("Completing blob")]
+    pub fn complete_verified_as(mut self, descriptor: &Descriptor) -> Result<Blob> {
+        let found_digest = format!("{SHA256_NAME}:{}", hex::encode(self.hash.finish()?));
+        let mut errs = Vec::new();
+        if found_digest.as_str() != descriptor.digest() {
+            errs.push(format!(
+                "Digest mismatch; found={} expected={}",
+                found_digest.as_str(),
+                descriptor.digest()
+            ));
+        }
+        let descriptor_size: u64 = descriptor.size().try_into().unwrap();
+        if self.size != descriptor_size {
+            errs.push(format!(
+                "Size mismatch; found={} expected={}",
+                self.size, descriptor_size
+            ));
+        }
+        match errs.as_slice() {
+            [] => self.complete(),
+            o => {
+                let o = o.join(" and ");
+                anyhow::bail!("{o}")
+            }
+        }
+    }
+
     #[context("Completing blob")]
     /// Finish writing this blob object.
     pub fn complete(mut self) -> Result<Blob> {
@@ -638,11 +707,13 @@ mod tests {
         let mut layerw = w.create_gzip_layer(None)?;
         layerw.write_all(b"pretend this is a tarball")?;
         let root_layer = layerw.complete()?;
+        let root_layer_desc = root_layer.descriptor().build().unwrap();
         assert_eq!(
             root_layer.uncompressed_sha256,
             "349438e5faf763e8875b43de4d7101540ef4d865190336c2cc549a11f33f8d7c"
         );
         assert_eq!(w.fsck().unwrap(), 1);
+        assert!(w.has_blob(&root_layer_desc).unwrap());
         // Also verify that corrupting the object is found
         {
             let mut f = w.dir.open_with(
@@ -656,6 +727,15 @@ mod tests {
             f.set_len(l)?;
             assert_eq!(w.fsck().unwrap(), 1);
         }
+
+        // Check that we don't find nonexistent blobs
+        assert!(!w
+            .has_blob(&Descriptor::new(
+                MediaType::ImageLayerGzip,
+                root_layer.blob.size.try_into().unwrap(),
+                format!("sha256:{}", root_layer.uncompressed_sha256.as_str())
+            ))
+            .unwrap());
 
         let mut manifest = new_empty_manifest().build().unwrap();
         let mut config = oci_image::ImageConfigurationBuilder::default()
@@ -672,8 +752,9 @@ mod tests {
         let read_manifest = w.read_manifest().unwrap();
         assert_eq!(&read_manifest, &manifest);
 
-        let _: Descriptor =
+        let desc: Descriptor =
             w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
+        assert!(w.has_manifest(&desc).unwrap());
         // There's more than one now
         assert!(w.read_manifest().is_err());
         assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
