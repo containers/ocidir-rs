@@ -42,11 +42,13 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use flate2::write::GzEncoder;
 use fn_error_context::context;
 use oci_image::MediaType;
-use oci_spec::image::{self as oci_image, Descriptor, ImageIndex};
+use oci_spec::image::{
+    self as oci_image, Descriptor, ImageConfiguration, ImageIndex, ImageManifest,
+};
 use olpc_cjson::CanonicalFormatter;
 use openssl::hash::{Hasher, MessageDigest};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
@@ -136,6 +138,23 @@ impl<'a> Debug for GzipLayerWriter<'a> {
             .field("compressor", &self.compressor)
             .finish()
     }
+}
+
+// Verifies that the descriptor refers to a sha256 digest,
+// and returns that digest (without the algorithm prefix).
+fn sha256_of_descriptor(d: &Descriptor) -> Result<&str> {
+    let (alg, digest) = d
+        .digest()
+        .split_once(':')
+        .ok_or_else(|| anyhow!("Invalid digest {}", d.digest()))?;
+    let alg = parse_one_filename(alg)?;
+    if alg != SHA256_NAME {
+        anyhow::bail!("Unsupported digest algorithm {}", d.digest());
+    }
+    if digest.len() != BLOB_SHA256_LEN {
+        anyhow::bail!("Invalid sha256: {}", d.digest());
+    }
+    Ok(digest)
 }
 
 #[derive(Debug)]
@@ -317,25 +336,21 @@ impl OciDir {
     }
 
     fn parse_descriptor_to_path(desc: &oci_spec::image::Descriptor) -> Result<PathBuf> {
-        let (alg, hash) = desc
-            .digest()
-            .split_once(':')
-            .ok_or_else(|| anyhow!("Invalid digest {}", desc.digest()))?;
-        let alg = parse_one_filename(alg)?;
-        if alg != SHA256_NAME {
-            anyhow::bail!("Unsupported digest algorithm {}", desc.digest());
-        }
-        let hash = parse_one_filename(hash)?;
-        Ok(Path::new(BLOBDIR).join(hash))
+        let digest = sha256_of_descriptor(desc)?;
+        Ok(Path::new(BLOBDIR).join(digest))
     }
 
-    /// Open a blob
+    /// Open a blob; its size is validated as a sanity check.
+    #[context("Reading blob {}", desc.digest())]
     pub fn read_blob(&self, desc: &oci_spec::image::Descriptor) -> Result<File> {
         let path = Self::parse_descriptor_to_path(desc)?;
-        self.dir
-            .open(path)
-            .map_err(Into::into)
-            .map(|f| f.into_std())
+        let f = self.dir.open(path).map(|f| f.into_std())?;
+        let expected_size: u64 = desc.size().try_into()?;
+        let found_size = f.metadata()?.len();
+        if expected_size != found_size {
+            anyhow::bail!("Expected size {expected_size} but found {found_size}");
+        }
+        Ok(f)
     }
 
     /// Returns `true` if the blob with this digest is already present.
@@ -516,34 +531,46 @@ impl OciDir {
         Ok((self.read_json_blob(&desc)?, desc))
     }
 
-    /// Verify consistency; primarily this checks the sha256 digest in `blobs/sha256`.
-    /// Returns the number of verified objects.
-    pub fn fsck(&self) -> Result<u32> {
-        let mut r = 0;
-        for ent in self.dir.read_dir(BLOBDIR)? {
-            let ent = ent?;
-            let name = ent.file_name();
-            // For now ignore non-blobs
-            if name.len() != BLOB_SHA256_LEN {
+    /// Verify a single manifest and all of its referenced objects.
+    /// Skips already validated blobs referenced by digest in `validated`,
+    /// and updates that set with ones we did validate.
+    fn fsck_one_manifest(
+        &self,
+        manifest: &ImageManifest,
+        validated: &mut HashSet<String>,
+    ) -> Result<()> {
+        let _: ImageConfiguration = self.read_json_blob(manifest.config())?;
+        validated.insert(manifest.config().digest().clone());
+        for layer in manifest.layers() {
+            if validated.contains(layer.digest()) {
                 continue;
             }
-            let ty = ent.file_type()?;
-            if !ty.is_file() {
-                continue;
-            }
-            let Some(expected_digest) = name.to_str() else {
-                anyhow::bail!("Invalid blob name: {name:?}");
-            };
-            let mut f = ent.open().map(BufReader::new)?;
+            let expected_digest = sha256_of_descriptor(layer)?;
+            let mut f = self.read_blob(layer)?;
             let mut digest = Hasher::new(MessageDigest::sha256())?;
             std::io::copy(&mut f, &mut digest)?;
             let found_digest = hex::encode(digest.finish()?);
             if expected_digest != found_digest {
                 anyhow::bail!("Expected blob digest {expected_digest} but found {found_digest}");
             }
-            r += 1;
+            validated.insert(layer.digest().to_string());
         }
-        Ok(r)
+        Ok(())
+    }
+
+    /// Verify consistency of the index, its manifests, the config and blobs (all the latter)
+    /// by verifying their descriptor.
+    pub fn fsck(&self) -> Result<u64> {
+        let Some(index) = self.read_index()? else {
+            return Ok(0);
+        };
+        let mut validated_blobs = HashSet::new();
+        for manifest_descriptor in index.manifests() {
+            let manifest: ImageManifest = self.read_json_blob(manifest_descriptor)?;
+            validated_blobs.insert(manifest_descriptor.digest().clone());
+            self.fsck_one_manifest(&manifest, &mut validated_blobs)?;
+        }
+        Ok(validated_blobs.len().try_into().unwrap())
     }
 }
 
@@ -712,21 +739,9 @@ mod tests {
             root_layer.uncompressed_sha256,
             "349438e5faf763e8875b43de4d7101540ef4d865190336c2cc549a11f33f8d7c"
         );
-        assert_eq!(w.fsck().unwrap(), 1);
+        // Nothing referencing this blob yet
+        assert_eq!(w.fsck().unwrap(), 0);
         assert!(w.has_blob(&root_layer_desc).unwrap());
-        // Also verify that corrupting the object is found
-        {
-            let mut f = w.dir.open_with(
-                format!("blobs/sha256/{}", root_layer.blob.sha256),
-                OpenOptions::new().write(true),
-            )?;
-            let l = f.metadata()?.len();
-            f.seek(std::io::SeekFrom::End(0))?;
-            f.write_all(b"\0")?;
-            assert!(w.fsck().is_err());
-            f.set_len(l)?;
-            assert_eq!(w.fsck().unwrap(), 1);
-        }
 
         // Check that we don't find nonexistent blobs
         assert!(!w
@@ -748,6 +763,22 @@ mod tests {
         w.replace_with_single_manifest(manifest.clone(), oci_image::Platform::default())?;
         assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 1);
         assert_eq!(w.fsck().unwrap(), 3);
+        // Also verify that corrupting a blob is found
+        {
+            let mut f = w.dir.open_with(
+                format!(
+                    "blobs/sha256/{}",
+                    sha256_of_descriptor(&root_layer_desc).unwrap()
+                ),
+                OpenOptions::new().write(true),
+            )?;
+            let l = f.metadata()?.len();
+            f.seek(std::io::SeekFrom::End(0))?;
+            f.write_all(b"\0")?;
+            assert!(w.fsck().is_err());
+            f.set_len(l)?;
+            assert_eq!(w.fsck().unwrap(), 3);
+        }
 
         let read_manifest = w.read_manifest().unwrap();
         assert_eq!(&read_manifest, &manifest);
