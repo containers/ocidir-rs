@@ -34,12 +34,10 @@
 //! [OCI images]: https://github.com/opencontainers/image-spec
 //!
 
-use anyhow::{anyhow, Context, Result};
 use cap_std::fs::{Dir, DirBuilderExt};
 use cap_std_ext::cap_tempfile;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use flate2::write::GzEncoder;
-use fn_error_context::context;
 use oci_image::MediaType;
 use oci_spec::image::{
     self as oci_image, Descriptor, Digest, ImageConfiguration, ImageIndex, ImageManifest,
@@ -54,6 +52,7 @@ use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use thiserror::Error;
 
 // Re-export our dependencies that are used as part of the public API.
 pub use cap_std_ext::cap_std;
@@ -63,6 +62,51 @@ pub use oci_spec;
 const BLOBDIR: &str = "blobs/sha256";
 
 const OCI_TAG_ANNOTATION: &str = "org.opencontainers.image.ref.name";
+
+/// Errors returned by this crate.
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum Error {
+    #[error("i/o error")]
+    /// An input/output error
+    Io(#[from] std::io::Error),
+    #[error("serialization error")]
+    /// Returned when serialization or deserialization fails
+    SerDe(#[from] serde_json::Error),
+    #[error("parsing OCI value")]
+    /// Returned when an OCI spec error occurs
+    OciSpecError(#[from] oci_spec::OciSpecError),
+    #[error("unexpected cryptographic routine error")]
+    /// Returned when a cryptographic routine encounters an unexpected problem
+    CryptographicError(Box<str>),
+    #[error("Expected digest {expected} but found {found}")]
+    /// Returned when a digest does not match
+    DigestMismatch { expected: Box<str>, found: Box<str> },
+    #[error("Expected size {expected} but found {found}")]
+    /// Returned when a descriptor digest does not match what was expected
+    SizeMismatch { expected: u64, found: u64 },
+    #[error("Expected digest algorithm sha256 but found {found}")]
+    /// Returned when a digest algorithm is not supported
+    UnsupportedDigestAlgorithm { found: Box<str> },
+    #[error("error")]
+    /// An unknown other error
+    Other(Box<str>),
+}
+
+/// The error type returned from this crate.
+pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<openssl::error::Error> for Error {
+    fn from(value: openssl::error::Error) -> Self {
+        Self::CryptographicError(value.to_string().into())
+    }
+}
+
+impl From<openssl::error::ErrorStack> for Error {
+    fn from(value: openssl::error::ErrorStack) -> Self {
+        Self::CryptographicError(value.to_string().into())
+    }
+}
 
 /// Completed blob metadata
 #[derive(Debug)]
@@ -150,7 +194,6 @@ pub struct OciDir {
 }
 
 /// Write a serializable data (JSON) as an OCI blob
-#[context("Writing json blob")]
 #[deprecated = "Use OciDir::write_json_blob instead"]
 pub fn write_json_blob<S: serde::Serialize>(
     ocidir: &Dir,
@@ -159,7 +202,7 @@ pub fn write_json_blob<S: serde::Serialize>(
 ) -> Result<oci_image::DescriptorBuilder> {
     let mut w = BlobWriter::new(ocidir)?;
     let mut ser = serde_json::Serializer::with_formatter(&mut w, CanonicalFormatter::new());
-    v.serialize(&mut ser).context("Failed to serialize")?;
+    v.serialize(&mut ser)?;
     let blob = w.complete()?;
     Ok(blob.descriptor().media_type(media_type))
 }
@@ -190,10 +233,16 @@ pub fn new_empty_manifest() -> oci_image::ImageManifestBuilder {
         .layers(Vec::new())
 }
 
+fn sha256_of_descriptor(desc: &Descriptor) -> Result<&str> {
+    desc.as_digest_sha256()
+        .ok_or_else(|| Error::UnsupportedDigestAlgorithm {
+            found: desc.digest().to_string().into(),
+        })
+}
+
 impl OciDir {
     /// Open the OCI directory at the target path; if it does not already
     /// have the standard OCI metadata, it is created.
-    #[context("Opening OCI dir")]
     pub fn ensure(dir: &Dir) -> Result<Self> {
         let mut db = cap_std::fs::DirBuilder::new();
         db.recursive(true).mode(0o755);
@@ -226,7 +275,6 @@ impl OciDir {
     }
 
     /// Write a serializable data (JSON) as an OCI blob
-    #[context("Writing json blob")]
     pub fn write_json_blob<S: serde::Serialize>(
         &self,
         v: &S,
@@ -317,21 +365,18 @@ impl OciDir {
     }
 
     fn parse_descriptor_to_path(desc: &oci_spec::image::Descriptor) -> Result<PathBuf> {
-        let digest = desc
-            .as_digest_sha256()
-            .ok_or_else(|| anyhow!("Unsupported non-sha256 digest in descriptor"))?;
+        let digest = sha256_of_descriptor(desc)?;
         Ok(Path::new(BLOBDIR).join(digest))
     }
 
     /// Open a blob; its size is validated as a sanity check.
-    #[context("Reading blob {}", desc.digest())]
     pub fn read_blob(&self, desc: &oci_spec::image::Descriptor) -> Result<File> {
         let path = Self::parse_descriptor_to_path(desc)?;
         let f = self.dir.open(path).map(|f| f.into_std())?;
-        let expected_size: u64 = desc.size();
-        let found_size = f.metadata()?.len();
-        if expected_size != found_size {
-            anyhow::bail!("Expected size {expected_size} but found {found_size}");
+        let expected: u64 = desc.size();
+        let found = f.metadata()?.len();
+        if expected != found {
+            return Err(Error::SizeMismatch { expected, found });
         }
         Ok(f)
     }
@@ -359,7 +404,7 @@ impl OciDir {
         desc: &oci_spec::image::Descriptor,
     ) -> Result<T> {
         let blob = BufReader::new(self.read_blob(desc)?);
-        serde_json::from_reader(blob).with_context(|| format!("Parsing object {}", desc.digest()))
+        serde_json::from_reader(blob).map_err(Into::into)
     }
 
     /// Write a configuration blob.
@@ -423,7 +468,7 @@ impl OciDir {
             .atomic_replace_with("index.json", |mut w| -> Result<()> {
                 let mut ser =
                     serde_json::Serializer::with_formatter(&mut w, CanonicalFormatter::new());
-                index.serialize(&mut ser).context("Failed to serialize")?;
+                index.serialize(&mut ser)?;
                 Ok(())
             })?;
         Ok(manifest)
@@ -463,17 +508,10 @@ impl OciDir {
             .atomic_replace_with("index.json", |mut w| -> Result<()> {
                 let mut ser =
                     serde_json::Serializer::with_formatter(&mut w, CanonicalFormatter::new());
-                index_data
-                    .serialize(&mut ser)
-                    .context("Failed to serialize")?;
+                index_data.serialize(&mut ser)?;
                 Ok(())
             })?;
         Ok(())
-    }
-
-    /// If this OCI directory has a single manifest, return it.  Otherwise, an error is returned.
-    pub fn read_manifest(&self) -> Result<oci_image::ImageManifest> {
-        self.read_manifest_and_descriptor().map(|r| r.0)
     }
 
     fn descriptor_is_tagged(d: &Descriptor, tag: &str) -> bool {
@@ -486,10 +524,7 @@ impl OciDir {
 
     /// Find the manifest with the provided tag
     pub fn find_manifest_with_tag(&self, tag: &str) -> Result<Option<oci_image::ImageManifest>> {
-        let f = self
-            .dir
-            .open("index.json")
-            .context("Failed to open index.json")?;
+        let f = self.dir.open("index.json")?;
         let idx: oci_image::ImageIndex = serde_json::from_reader(BufReader::new(f))?;
         for img in idx.manifests() {
             if Self::descriptor_is_tagged(img, tag) {
@@ -497,21 +532,6 @@ impl OciDir {
             }
         }
         Ok(None)
-    }
-
-    /// If this OCI directory has a single manifest, return it.  Otherwise, an error is returned.
-    pub fn read_manifest_and_descriptor(&self) -> Result<(oci_image::ImageManifest, Descriptor)> {
-        let f = self
-            .dir
-            .open("index.json")
-            .context("Failed to open index.json")?;
-        let idx: oci_image::ImageIndex = serde_json::from_reader(BufReader::new(f))?;
-        let desc = match idx.manifests().as_slice() {
-            [] => anyhow::bail!("No manifests found"),
-            [desc] => desc.clone(),
-            manifests => anyhow::bail!("Expected exactly 1 manifest, found {}", manifests.len()),
-        };
-        Ok((self.read_json_blob(&desc)?, desc))
     }
 
     /// Verify a single manifest and all of its referenced objects.
@@ -522,29 +542,29 @@ impl OciDir {
         manifest: &ImageManifest,
         validated: &mut HashSet<Box<str>>,
     ) -> Result<()> {
+        let config_digest = sha256_of_descriptor(manifest.config())?;
         let _: ImageConfiguration = self.read_json_blob(manifest.config())?;
-        validated.insert(
-            manifest
-                .config()
-                .as_digest_sha256()
-                .ok_or_else(|| anyhow!("Unsupported digest for config"))?
-                .into(),
-        );
+        validated.insert(config_digest.into());
         for layer in manifest.layers() {
-            let expected_digest = layer
-                .as_digest_sha256()
-                .ok_or_else(|| anyhow!("Unsupported digest for layer {}", layer.digest()))?;
-            if validated.contains(expected_digest) {
+            let expected = sha256_of_descriptor(layer)?;
+            if validated.contains(expected) {
                 continue;
             }
             let mut f = self.read_blob(layer)?;
             let mut digest = Hasher::new(MessageDigest::sha256())?;
             std::io::copy(&mut f, &mut digest)?;
-            let found_digest = hex::encode(digest.finish()?);
-            if expected_digest != found_digest {
-                anyhow::bail!("Expected blob digest {expected_digest} but found {found_digest}");
+            let found = hex::encode(
+                digest
+                    .finish()
+                    .map_err(|e| Error::Other(e.to_string().into()))?,
+            );
+            if expected != found {
+                return Err(Error::DigestMismatch {
+                    expected: expected.into(),
+                    found: found.into(),
+                });
             }
-            validated.insert(expected_digest.into());
+            validated.insert(expected.into());
         }
         Ok(())
     }
@@ -557,12 +577,7 @@ impl OciDir {
         };
         let mut validated_blobs = HashSet::new();
         for manifest_descriptor in index.manifests() {
-            let expected_sha256 = manifest_descriptor.as_digest_sha256().ok_or_else(|| {
-                anyhow!(
-                    "Unsupported digest for manifest: {}",
-                    manifest_descriptor.digest()
-                )
-            })?;
+            let expected_sha256 = sha256_of_descriptor(manifest_descriptor)?;
             let manifest: ImageManifest = self.read_json_blob(manifest_descriptor)?;
             validated_blobs.insert(expected_sha256.into());
             self.fsck_one_manifest(&manifest, &mut validated_blobs)?;
@@ -572,7 +587,6 @@ impl OciDir {
 }
 
 impl<'a> BlobWriter<'a> {
-    #[context("Creating blob writer")]
     fn new(ocidir: &'a Dir) -> Result<Self> {
         Ok(Self {
             hash: Hasher::new(MessageDigest::sha256())?,
@@ -583,37 +597,25 @@ impl<'a> BlobWriter<'a> {
     }
 
     /// Finish writing this blob, verifying its digest and size against the expected descriptor.
-    #[context("Completing blob")]
     pub fn complete_verified_as(mut self, descriptor: &Descriptor) -> Result<Blob> {
-        let expected_digest = descriptor
-            .as_digest_sha256()
-            .ok_or_else(|| anyhow!("Unsupported digest for descriptor: {}", descriptor.digest()))?;
+        let expected_digest = sha256_of_descriptor(descriptor)?;
         let found_digest = hex::encode(self.hash.finish()?);
-        let mut errs = Vec::new();
         if found_digest.as_str() != expected_digest {
-            errs.push(format!(
-                "Digest mismatch; found={} expected={}",
-                found_digest.as_str(),
-                descriptor.digest()
-            ));
+            return Err(Error::DigestMismatch {
+                expected: expected_digest.into(),
+                found: found_digest.into(),
+            });
         }
         let descriptor_size: u64 = descriptor.size();
         if self.size != descriptor_size {
-            errs.push(format!(
-                "Size mismatch; found={} expected={}",
-                self.size, descriptor_size
-            ));
+            return Err(Error::SizeMismatch {
+                expected: descriptor_size,
+                found: self.size,
+            });
         }
-        match errs.as_slice() {
-            [] => self.complete(),
-            o => {
-                let o = o.join(" and ");
-                anyhow::bail!("{o}")
-            }
-        }
+        self.complete()
     }
 
-    #[context("Completing blob")]
     /// Finish writing this blob object.
     pub fn complete(mut self) -> Result<Blob> {
         let sha256 = hex::encode(self.hash.finish()?);
@@ -655,7 +657,6 @@ impl<'a> GzipLayerWriter<'a> {
         })
     }
 
-    #[context("Completing layer")]
     /// Consume this writer, flushing buffered data and put the blob in place.
     pub fn complete(mut self) -> Result<Layer> {
         self.compressor.get_mut().clear();
@@ -779,14 +780,15 @@ mod tests {
             assert_eq!(w.fsck().unwrap(), 3);
         }
 
-        let read_manifest = w.read_manifest().unwrap();
+        let idx = w.read_index()?.unwrap();
+        let manifest_desc = idx.manifests().first().unwrap();
+        let read_manifest = w.read_json_blob(manifest_desc).unwrap();
         assert_eq!(&read_manifest, &manifest);
 
         let desc: Descriptor =
             w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
         assert!(w.has_manifest(&desc).unwrap());
         // There's more than one now
-        assert!(w.read_manifest().is_err());
         assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
 
         assert!(w.find_manifest_with_tag("noent").unwrap().is_none());
