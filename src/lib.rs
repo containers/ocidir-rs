@@ -18,10 +18,11 @@
 //!
 //! ```rust,no_run
 //! # use ocidir::cap_std;
+//! # use anyhow::{anyhow, Result};
 //! # fn main() -> anyhow::Result<()> {
 //! let d = cap_std::fs::Dir::open_ambient_dir("/path/to/ocidir", cap_std::ambient_authority())?;
 //! let d = ocidir::OciDir::open(&d)?;
-//! println!("{:?}", d.read_manifest()?);
+//! println!("{:?}", d.read_index()?.ok_or_else(|| anyhow!("missing Image Index"))?);
 //! # Ok(())
 //! # }
 //! ```

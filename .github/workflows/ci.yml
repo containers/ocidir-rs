@@ -37,6 +37,9 @@ jobs:
         run: cargo build --all-targets
       - name: cargo test
         run: cargo test --all-targets
+      # https://github.com/rust-lang/cargo/issues/6669
+      - name: cargo test --doc
+        run: cargo test --doc
   linting:
     name: Lints, pinned toolchain
     runs-on: ubuntu-latest

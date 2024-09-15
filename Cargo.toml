@@ -20,3 +20,6 @@ serde_json = "1.0.64"
 tar = "0.4.38"
 thiserror = "1"
 oci-spec = "0.7.0"
+
+[dev-dependencies]
+anyhow = "1.0.89"
