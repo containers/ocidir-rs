@@ -614,19 +614,24 @@ impl<'a> BlobWriter<'a> {
                 found: self.size,
             });
         }
-        self.complete()
+        self.complete_as(&found_digest)
+    }
+
+    /// Finish writing this blob object with the supplied name
+    fn complete_as(mut self, sha256_digest: &str) -> Result<Blob> {
+        let destname = &format!("{}/{}", BLOBDIR, sha256_digest);
+        let target = self.target.take().unwrap();
+        target.replace(destname)?;
+        Ok(Blob {
+            sha256: Sha256Digest::from_str(sha256_digest).unwrap(),
+            size: self.size,
+        })
     }
 
     /// Finish writing this blob object.
     pub fn complete(mut self) -> Result<Blob> {
         let sha256 = hex::encode(self.hash.finish()?);
-        let destname = &format!("{}/{}", BLOBDIR, sha256);
-        let target = self.target.take().unwrap();
-        target.replace(destname)?;
-        Ok(Blob {
-            sha256: Sha256Digest::from_str(&sha256).unwrap(),
-            size: self.size,
-        })
+        self.complete_as(&sha256)
     }
 }
 
@@ -812,6 +817,25 @@ mod tests {
         )?;
         assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
         assert_eq!(w.fsck().unwrap(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn test_complete_verified_as() -> Result<()> {
+        let td = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        let oci_dir = OciDir::ensure(&td)?;
+        let empty_json_digest = oci_image::DescriptorBuilder::default()
+            .media_type(MediaType::EmptyJSON)
+            .size(2_u32)
+            .digest(Sha256Digest::from_str(
+                "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            )?)
+            .build()?;
+
+        let mut empty_json_blob = oci_dir.create_blob()?;
+        empty_json_blob.write_all("{}".as_bytes())?;
+        let blob = empty_json_blob.complete_verified_as(&empty_json_digest)?;
+        assert_eq!(blob.sha256().digest(), empty_json_digest.digest().digest());
         Ok(())
     }
 }
