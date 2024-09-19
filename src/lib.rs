@@ -824,18 +824,49 @@ mod tests {
     fn test_complete_verified_as() -> Result<()> {
         let td = cap_tempfile::tempdir(cap_std::ambient_authority())?;
         let oci_dir = OciDir::ensure(&td)?;
+
+        // Test a successful write
         let empty_json_digest = oci_image::DescriptorBuilder::default()
             .media_type(MediaType::EmptyJSON)
-            .size(2_u32)
+            .size(2u32)
             .digest(Sha256Digest::from_str(
                 "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
             )?)
             .build()?;
 
         let mut empty_json_blob = oci_dir.create_blob()?;
-        empty_json_blob.write_all("{}".as_bytes())?;
+        empty_json_blob.write_all(b"{}")?;
         let blob = empty_json_blob.complete_verified_as(&empty_json_digest)?;
         assert_eq!(blob.sha256().digest(), empty_json_digest.digest().digest());
+
+        // And a checksum mismatch
+        let test_descriptor = oci_image::DescriptorBuilder::default()
+            .media_type(MediaType::EmptyJSON)
+            .size(3u32)
+            .digest(Sha256Digest::from_str(
+                "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            )?)
+            .build()?;
+        let mut invalid_blob = oci_dir.create_blob()?;
+        invalid_blob.write_all(b"foo")?;
+        match invalid_blob
+            .complete_verified_as(&test_descriptor)
+            .err()
+            .unwrap()
+        {
+            Error::DigestMismatch { expected, found } => {
+                assert_eq!(
+                    expected.as_ref(),
+                    "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                );
+                assert_eq!(
+                    found.as_ref(),
+                    "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+                );
+            }
+            o => panic!("Unexpected error {o}"),
+        }
+
         Ok(())
     }
 }
