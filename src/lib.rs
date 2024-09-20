@@ -1,39 +1,4 @@
-//! # Read and write to OCI image layout directories
-//!
-//! This library contains medium and low-level APIs for working with
-//! [OCI images], which are basically a directory with blobs and JSON files
-//! for metadata.
-//!
-//! ## Dependency on cap-std
-//!
-//! This library makes use of [cap-std] to operate in a capability-oriented
-//! fashion. In practice, the code in this project is well tested and would
-//! not traverse outside its own path root. However, using capabilities
-//! is a generally good idea when operating in the container ecosystem,
-//! in particular when actively processing tar streams.
-//!
-//! ## Getting started
-//!
-//! To access an existing OCI directory:
-//!
-//! ```rust,no_run
-//! # use ocidir::cap_std;
-//! # use anyhow::{anyhow, Result};
-//! # fn main() -> anyhow::Result<()> {
-//! let d = cap_std::fs::Dir::open_ambient_dir("/path/to/ocidir", cap_std::ambient_authority())?;
-//! let d = ocidir::OciDir::open(&d)?;
-//! println!("{:?}", d.read_index()?.ok_or_else(|| anyhow!("missing Image Index"))?);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Users of this crate are likely to want to perform low-level manipulations
-//! such as synthesizing tar layers; [`OciDir::push_layer`] for example can
-//! be used for this.
-//!
-//! [cap-std]: https://docs.rs/cap-std/
-//! [OCI images]: https://github.com/opencontainers/image-spec
-//!
+#![doc = include_str!("../README.md")]
 
 use cap_std::fs::{Dir, DirBuilderExt};
 use cap_std_ext::cap_tempfile;
