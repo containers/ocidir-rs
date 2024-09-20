@@ -4,6 +4,7 @@
 
 [crates-badge]: https://img.shields.io/crates/v/ocidir.svg
 [crates-url]: https://crates.io/crates/ocidir
+[![docs.rs](https://docs.rs/ocidir/badge.svg)](https://docs.rs/ocidir)
 
 # Read and write to OCI image layout directories
 
