@@ -157,6 +157,7 @@ impl<'a> Debug for GzipLayerWriter<'a> {
 pub struct OciDir {
     /// The underlying directory.
     pub dir: std::sync::Arc<Dir>,
+    pub blobs_dir: Dir,
 }
 
 /// Write a serializable data (JSON) as an OCI blob
@@ -224,7 +225,7 @@ impl OciDir {
         let p = p.as_ref();
         destdir.create_dir(p)?;
         let cloned = Self::ensure(&destdir.open_dir(p)?)?;
-        for blob in self.dir.read_dir(BLOBDIR)? {
+        for blob in self.blobs_dir.entries()? {
             let blob = blob?;
             let path = Path::new(BLOBDIR).join(blob.file_name());
             let mut src = self.dir.open(&path).map(BufReader::new)?;
@@ -237,7 +238,17 @@ impl OciDir {
     /// Open an existing OCI directory.
     pub fn open(dir: &Dir) -> Result<Self> {
         let dir = std::sync::Arc::new(dir.try_clone()?);
-        Ok(Self { dir })
+        let blobs_dir = dir.open_dir(BLOBDIR)?;
+        Ok(Self { dir, blobs_dir })
+    }
+
+    /// Open an existing OCI directory with a separate cap_std::Dir for blobs/sha256
+    /// This is useful when `blobs/sha256` might contain symlinks pointing outside the oci
+    /// directory, e.g. when sharing blobs across OCI repositories. The LXC OCI template uses this
+    /// feature.
+    pub fn open_with_external_blobs(dir: &Dir, blobs_dir: Dir) -> Result<Self> {
+        let dir = std::sync::Arc::new(dir.try_clone()?);
+        Ok(Self { dir, blobs_dir })
     }
 
     /// Write a serializable data (JSON) as an OCI blob
@@ -332,13 +343,13 @@ impl OciDir {
 
     fn parse_descriptor_to_path(desc: &oci_spec::image::Descriptor) -> Result<PathBuf> {
         let digest = sha256_of_descriptor(desc)?;
-        Ok(Path::new(BLOBDIR).join(digest))
+        Ok(PathBuf::from(digest))
     }
 
     /// Open a blob; its size is validated as a sanity check.
     pub fn read_blob(&self, desc: &oci_spec::image::Descriptor) -> Result<File> {
         let path = Self::parse_descriptor_to_path(desc)?;
-        let f = self.dir.open(path).map(|f| f.into_std())?;
+        let f = self.blobs_dir.open(path).map(|f| f.into_std())?;
         let expected: u64 = desc.size();
         let found = f.metadata()?.len();
         if expected != found {
@@ -350,7 +361,7 @@ impl OciDir {
     /// Returns `true` if the blob with this digest is already present.
     pub fn has_blob(&self, desc: &oci_spec::image::Descriptor) -> Result<bool> {
         let path = Self::parse_descriptor_to_path(desc)?;
-        self.dir.try_exists(path).map_err(Into::into)
+        self.blobs_dir.try_exists(path).map_err(Into::into)
     }
 
     /// Returns `true` if the manifest is already present.
