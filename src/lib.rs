@@ -104,12 +104,14 @@ pub struct Layer {
     pub blob: Blob,
     /// The uncompressed digest, which will be used for "diffid"s
     pub uncompressed_sha256: Sha256Digest,
+    /// The media type of the layer
+    pub media_type: MediaType,
 }
 
 impl Layer {
     /// Return the descriptor for this layer
     pub fn descriptor(&self) -> oci_image::DescriptorBuilder {
-        self.blob.descriptor().media_type(MediaType::ImageLayerGzip)
+        self.blob.descriptor().media_type(self.media_type.clone())
     }
 
     /// Return a Digest instance for the uncompressed SHA-256.
@@ -639,6 +641,7 @@ impl<'a> GzipLayerWriter<'a> {
         Ok(Layer {
             blob,
             uncompressed_sha256,
+            media_type: MediaType::ImageLayerGzip,
         })
     }
 }
