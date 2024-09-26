@@ -29,7 +29,7 @@ To access an existing OCI directory:
 # use anyhow::{anyhow, Result};
 # fn main() -> anyhow::Result<()> {
 let d = cap_std::fs::Dir::open_ambient_dir("/path/to/ocidir", cap_std::ambient_authority())?;
-let d = ocidir::OciDir::open(&d)?;
+let d = ocidir::OciDir::open(d)?;
 println!("{:?}", d.read_index()?.ok_or_else(|| anyhow!("missing Image Index"))?);
 # Ok(())
 # }
