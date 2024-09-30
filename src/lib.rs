@@ -54,6 +54,9 @@ pub enum Error {
     #[error("Expected digest algorithm sha256 but found {found}")]
     /// Returned when a digest algorithm is not supported
     UnsupportedDigestAlgorithm { found: Box<str> },
+    #[error("Cannot find the Image Index (index.json)")]
+    /// Returned when the OCI Image Index (index.json) is missing
+    MissingImageIndex,
     #[error("error")]
     /// An unknown other error
     Other(Box<str>),
@@ -519,14 +522,21 @@ impl OciDir {
 
     /// Find the manifest with the provided tag
     pub fn find_manifest_with_tag(&self, tag: &str) -> Result<Option<oci_image::ImageManifest>> {
-        let f = self.dir.open("index.json")?;
-        let idx: oci_image::ImageIndex = serde_json::from_reader(BufReader::new(f))?;
-        for img in idx.manifests() {
-            if Self::descriptor_is_tagged(img, tag) {
-                return self.read_json_blob(img).map(Some);
-            }
-        }
-        Ok(None)
+        let desc = self.find_manifest_descriptor_with_tag(tag)?;
+        desc.map(|img| self.read_json_blob(&img)).transpose()
+    }
+
+    /// Find the manifest descriptor with the provided tag
+    pub fn find_manifest_descriptor_with_tag(
+        &self,
+        tag: &str,
+    ) -> Result<Option<oci_image::Descriptor>> {
+        let idx = self.read_index()?.ok_or_else(|| Error::MissingImageIndex)?;
+        Ok(idx
+            .manifests()
+            .iter()
+            .find(|desc| Self::descriptor_is_tagged(desc, tag))
+            .cloned())
     }
 
     /// Verify a single manifest and all of its referenced objects.
