@@ -149,8 +149,8 @@ pub struct ZstdLayerWriter<'a>(Sha256Writer<zstd::Encoder<'static, BlobWriter<'a
 /// An opened OCI directory.
 pub struct OciDir {
     /// The underlying directory.
-    pub dir: Dir,
-    pub blobs_dir: Dir,
+    dir: Dir,
+    blobs_dir: Dir,
 }
 
 /// Write a serializable data (JSON) as an OCI blob
@@ -240,6 +240,16 @@ impl OciDir {
     /// feature.
     pub fn open_with_external_blobs(dir: Dir, blobs_dir: Dir) -> Result<Self> {
         Ok(Self { dir, blobs_dir })
+    }
+
+    /// Return the underlying directory.
+    pub fn dir(&self) -> &Dir {
+        &self.dir
+    }
+
+    /// Return the underlying directory for blobs.
+    pub fn blobs_dir(&self) -> &Dir {
+        &self.blobs_dir
     }
 
     /// Write a serializable data (JSON) as an OCI blob
