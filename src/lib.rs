@@ -162,20 +162,6 @@ pub struct OciDir {
     pub blobs_dir: Dir,
 }
 
-/// Write a serializable data (JSON) as an OCI blob
-#[deprecated = "Use OciDir::write_json_blob instead"]
-pub fn write_json_blob<S: serde::Serialize>(
-    ocidir: &Dir,
-    v: &S,
-    media_type: oci_image::MediaType,
-) -> Result<oci_image::DescriptorBuilder> {
-    let mut w = BlobWriter::new(ocidir)?;
-    let mut ser = serde_json::Serializer::with_formatter(&mut w, CanonicalFormatter::new());
-    v.serialize(&mut ser)?;
-    let blob = w.complete()?;
-    Ok(blob.descriptor().media_type(media_type))
-}
-
 /// Create a dummy config descriptor.
 /// Our API right now always mutates a manifest, which means we need
 /// a "valid" manifest, which requires a "valid" config descriptor.
@@ -257,10 +243,11 @@ impl OciDir {
         v: &S,
         media_type: oci_image::MediaType,
     ) -> Result<oci_image::DescriptorBuilder> {
-        // Forward to the legacy implementation; TODO semver for 0.3, drop
-        // the legacy API and move it here.
-        #[allow(deprecated)]
-        write_json_blob(&self.dir, v, media_type)
+        let mut w = BlobWriter::new(&self.dir)?;
+        let mut ser = serde_json::Serializer::with_formatter(&mut w, CanonicalFormatter::new());
+        v.serialize(&mut ser)?;
+        let blob = w.complete()?;
+        Ok(blob.descriptor().media_type(media_type))
     }
 
     /// Create a blob (can be anything).
