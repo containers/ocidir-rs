@@ -128,9 +128,9 @@ impl Layer {
 /// Create an OCI blob.
 pub struct BlobWriter<'a> {
     /// Compute checksum
-    pub hash: Hasher,
+    hash: Hasher,
     /// Target file
-    pub target: Option<cap_tempfile::TempFile<'a>>,
+    target: Option<cap_tempfile::TempFile<'a>>,
     size: u64,
 }
 
