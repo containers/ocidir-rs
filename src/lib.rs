@@ -78,9 +78,9 @@ impl From<openssl::error::ErrorStack> for Error {
 #[derive(Debug)]
 pub struct Blob {
     /// SHA-256 digest
-    pub sha256: oci_image::Sha256Digest,
+    sha256: oci_image::Sha256Digest,
     /// Size
-    pub size: u64,
+    size: u64,
 }
 
 impl Blob {
@@ -94,6 +94,11 @@ impl Blob {
         oci_image::DescriptorBuilder::default()
             .digest(self.sha256.clone())
             .size(self.size)
+    }
+
+    /// Return the size of this blob
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -123,9 +128,9 @@ impl Layer {
 /// Create an OCI blob.
 pub struct BlobWriter<'a> {
     /// Compute checksum
-    pub hash: Hasher,
+    hash: Hasher,
     /// Target file
-    pub target: Option<cap_tempfile::TempFile<'a>>,
+    target: Option<cap_tempfile::TempFile<'a>>,
     size: u64,
 }
 
@@ -149,8 +154,8 @@ pub struct ZstdLayerWriter<'a>(Sha256Writer<zstd::Encoder<'static, BlobWriter<'a
 /// An opened OCI directory.
 pub struct OciDir {
     /// The underlying directory.
-    pub dir: Dir,
-    pub blobs_dir: Dir,
+    dir: Dir,
+    blobs_dir: Dir,
 }
 
 /// Write a serializable data (JSON) as an OCI blob
@@ -240,6 +245,16 @@ impl OciDir {
     /// feature.
     pub fn open_with_external_blobs(dir: Dir, blobs_dir: Dir) -> Result<Self> {
         Ok(Self { dir, blobs_dir })
+    }
+
+    /// Return the underlying directory.
+    pub fn dir(&self) -> &Dir {
+        &self.dir
+    }
+
+    /// Return the underlying directory for blobs.
+    pub fn blobs_dir(&self) -> &Dir {
+        &self.blobs_dir
     }
 
     /// Write a serializable data (JSON) as an OCI blob
