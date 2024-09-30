@@ -20,6 +20,11 @@ serde_json = "1.0.64"
 tar = "0.4.38"
 thiserror = "1"
 oci-spec = "0.7.0"
+zstd = { version = "0.13.2", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0.89"
+
+[features]
+zstd = ["dep:zstd"]
+zstdmt = ["zstd", "zstd/zstdmt"]

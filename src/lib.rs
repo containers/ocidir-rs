@@ -139,20 +139,11 @@ impl<'a> Debug for BlobWriter<'a> {
 }
 
 /// Create an OCI tar+gzip layer.
-pub struct GzipLayerWriter<'a> {
-    bw: BlobWriter<'a>,
-    uncompressed_hash: Hasher,
-    compressor: GzEncoder<Vec<u8>>,
-}
+pub struct GzipLayerWriter<'a>(Sha256Writer<GzEncoder<BlobWriter<'a>>>);
 
-impl<'a> Debug for GzipLayerWriter<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GzipLayerWriter")
-            .field("bw", &self.bw)
-            .field("compressor", &self.compressor)
-            .finish()
-    }
-}
+#[cfg(feature = "zstd")]
+/// Writer for a OCI tar+zstd layer.
+pub struct ZstdLayerWriter<'a>(Sha256Writer<zstd::Encoder<'static, BlobWriter<'a>>>);
 
 #[derive(Debug)]
 /// An opened OCI directory.
@@ -282,8 +273,41 @@ impl OciDir {
         Ok(tar::Builder::new(self.create_gzip_layer(c)?))
     }
 
-    /// Add a layer to the top of the image stack.  The firsh pushed layer becomes the root.
+    #[cfg(feature = "zstd")]
+    /// Create a tar output stream, backed by a zstd compressed blob
+    ///
+    /// This method is only available when the `zstd` feature is enabled.
+    pub fn create_layer_zstd(
+        &self,
+        compression_level: Option<i32>,
+    ) -> Result<tar::Builder<ZstdLayerWriter>> {
+        Ok(tar::Builder::new(ZstdLayerWriter::new(
+            &self.dir,
+            compression_level,
+        )?))
+    }
 
+    #[cfg(feature = "zstdmt")]
+    /// Create a tar output stream, backed by a zstd compressed blob
+    /// using multithreaded compression.
+    ///
+    /// The `n_workers` parameter specifies the number of threads to use for compression, per
+    /// [zstd::Encoder::multithread]]
+    ///
+    /// This method is only available when the `zstdmt` feature is enabled.
+    pub fn create_layer_zstd_multithread(
+        &self,
+        compression_level: Option<i32>,
+        n_workers: u32,
+    ) -> Result<tar::Builder<ZstdLayerWriter>> {
+        Ok(tar::Builder::new(ZstdLayerWriter::multithread(
+            &self.dir,
+            compression_level,
+            n_workers,
+        )?))
+    }
+
+    /// Add a layer to the top of the image stack.  The firsh pushed layer becomes the root.
     pub fn push_layer(
         &self,
         manifest: &mut oci_image::ImageManifest,
@@ -632,21 +656,14 @@ impl<'a> GzipLayerWriter<'a> {
     /// Create a writer for a gzip compressed layer blob.
     fn new(ocidir: &'a Dir, c: Option<flate2::Compression>) -> Result<Self> {
         let bw = BlobWriter::new(ocidir)?;
-        Ok(Self {
-            bw,
-            uncompressed_hash: Hasher::new(MessageDigest::sha256())?,
-            compressor: GzEncoder::new(Vec::with_capacity(8192), c.unwrap_or_default()),
-        })
+        let enc = flate2::write::GzEncoder::new(bw, c.unwrap_or_default());
+        Ok(Self(Sha256Writer::new(enc)))
     }
 
     /// Consume this writer, flushing buffered data and put the blob in place.
-    pub fn complete(mut self) -> Result<Layer> {
-        self.compressor.get_mut().clear();
-        let buf = self.compressor.finish()?;
-        self.bw.write_all(&buf)?;
-        let blob = self.bw.complete()?;
-        let uncompressed_sha256 =
-            Sha256Digest::from_str(&hex::encode(self.uncompressed_hash.finish()?)).unwrap();
+    pub fn complete(self) -> Result<Layer> {
+        let (uncompressed_sha256, enc) = self.0.finish();
+        let blob = enc.finish()?.complete()?;
         Ok(Layer {
             blob,
             uncompressed_sha256,
@@ -656,17 +673,94 @@ impl<'a> GzipLayerWriter<'a> {
 }
 
 impl<'a> std::io::Write for GzipLayerWriter<'a> {
-    fn write(&mut self, srcbuf: &[u8]) -> std::io::Result<usize> {
-        self.compressor.get_mut().clear();
-        self.compressor.write_all(srcbuf).unwrap();
-        self.uncompressed_hash.update(srcbuf)?;
-        let compressed_buf = self.compressor.get_mut().as_slice();
-        self.bw.write_all(compressed_buf)?;
-        Ok(srcbuf.len())
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.0.write(data)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.bw.flush()
+        self.0.flush()
+    }
+}
+
+#[cfg(feature = "zstd")]
+impl<'a> ZstdLayerWriter<'a> {
+    /// Create a writer for a gzip compressed layer blob.
+    fn new(ocidir: &'a Dir, c: Option<i32>) -> Result<Self> {
+        let bw = BlobWriter::new(ocidir)?;
+        let encoder = zstd::Encoder::new(bw, c.unwrap_or(0))?;
+        Ok(Self(Sha256Writer::new(encoder)))
+    }
+
+    /// Consume this writer, flushing buffered data and put the blob in place.
+    pub fn complete(self) -> Result<Layer> {
+        let (uncompressed_sha256, enc) = self.0.finish();
+        let blob = enc.finish()?.complete()?;
+        Ok(Layer {
+            blob,
+            uncompressed_sha256,
+            media_type: MediaType::ImageLayerZstd,
+        })
+    }
+}
+
+#[cfg(feature = "zstdmt")]
+impl<'a> ZstdLayerWriter<'a> {
+    /// Create a writer for a zstd compressed layer blob, with multithreaded compression enabled.
+    ///
+    /// The `n_workers` parameter specifies the number of threads to use for compression, per
+    /// [Encoder::multithread]]
+    fn multithread(ocidir: &'a Dir, c: Option<i32>, n_workers: u32) -> Result<Self> {
+        let bw = BlobWriter::new(ocidir)?;
+        let mut encoder = zstd::Encoder::new(bw, c.unwrap_or(0))?;
+        encoder.multithread(n_workers)?;
+        Ok(Self(Sha256Writer::new(encoder)))
+    }
+}
+
+#[cfg(feature = "zstd")]
+impl<'a> std::io::Write for ZstdLayerWriter<'a> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.0.write(data)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// Wraps a writer and calculates the sha256 digest of data written to the inner writer
+struct Sha256Writer<W> {
+    inner: W,
+    sha: openssl::sha::Sha256,
+}
+
+impl<W> Sha256Writer<W> {
+    pub(crate) fn new(inner: W) -> Self {
+        Self {
+            inner,
+            sha: openssl::sha::Sha256::new(),
+        }
+    }
+
+    /// Return the hex encoded sha256 digest of the written data, and the underlying writer
+    pub(crate) fn finish(self) -> (Sha256Digest, W) {
+        let digest = hex::encode(self.sha.finish());
+        (Sha256Digest::from_str(&digest).unwrap(), self.inner)
+    }
+}
+
+impl<W> Write for Sha256Writer<W>
+where
+    W: Write,
+{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let len = self.inner.write(buf)?;
+        self.sha.update(&buf[..len]);
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
