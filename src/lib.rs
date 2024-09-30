@@ -78,9 +78,9 @@ impl From<openssl::error::ErrorStack> for Error {
 #[derive(Debug)]
 pub struct Blob {
     /// SHA-256 digest
-    pub sha256: oci_image::Sha256Digest,
+    sha256: oci_image::Sha256Digest,
     /// Size
-    pub size: u64,
+    size: u64,
 }
 
 impl Blob {
@@ -94,6 +94,11 @@ impl Blob {
         oci_image::DescriptorBuilder::default()
             .digest(self.sha256.clone())
             .size(self.size)
+    }
+
+    /// Return the size of this blob
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 
