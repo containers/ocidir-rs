@@ -24,6 +24,7 @@ zstd = { version = "0.13.2", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0.89"
+gzp = { git = "https://github.com/tofay/gzp", branch = "borrowed-writer" }
 
 [features]
 zstd = ["dep:zstd"]
