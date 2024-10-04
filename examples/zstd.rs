@@ -2,10 +2,11 @@
 fn main() {
     use std::{env, path::PathBuf};
 
+    use cap_tempfile::TempDir;
     use oci_spec::image::Platform;
-    use ocidir::{cap_std::fs::Dir, new_empty_manifest, OciDir};
-    let dir = Dir::open_ambient_dir(env::temp_dir(), ocidir::cap_std::ambient_authority()).unwrap();
-    let oci_dir = OciDir::ensure(dir).unwrap();
+    use ocidir::{new_empty_manifest, OciDir};
+    let dir = TempDir::new(ocidir::cap_std::ambient_authority()).unwrap();
+    let oci_dir = OciDir::ensure(dir.try_clone().unwrap()).unwrap();
 
     let mut manifest = new_empty_manifest().build().unwrap();
     let mut config = ocidir::oci_spec::image::ImageConfigurationBuilder::default()

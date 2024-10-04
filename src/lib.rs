@@ -281,7 +281,7 @@ impl OciDir {
     ///
     /// This method is only available when the `zstd` feature is enabled.
     pub fn create_layer_zstd(&self, compression_level: Option<i32>) -> Result<ZstdLayerWriter> {
-        Ok(ZstdLayerWriter::new(&self.dir, compression_level)?)
+        ZstdLayerWriter::new(&self.dir, compression_level)
     }
 
     #[cfg(feature = "zstdmt")]
@@ -298,11 +298,7 @@ impl OciDir {
         compression_level: Option<i32>,
         n_workers: u32,
     ) -> Result<ZstdLayerWriter> {
-        Ok(ZstdLayerWriter::multithread(
-            &self.dir,
-            compression_level,
-            n_workers,
-        )?)
+        ZstdLayerWriter::multithread(&self.dir, compression_level, n_workers)
     }
 
     /// Add a layer to the top of the image stack.  The firsh pushed layer becomes the root.

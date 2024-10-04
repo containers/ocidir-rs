@@ -24,6 +24,7 @@ zstd = { version = "0.13.2", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0.89"
+cap-tempfile = "3.3.0"
 
 [features]
 zstd = ["dep:zstd"]
