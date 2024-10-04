@@ -276,22 +276,18 @@ impl OciDir {
     }
 
     #[cfg(feature = "zstd")]
-    /// Create a tar output stream, backed by a zstd compressed blob
+    /// Create a writer for a new zstd+tar blob; the contents
+    /// are not parsed, but are expected to be a tarball.
     ///
     /// This method is only available when the `zstd` feature is enabled.
-    pub fn create_layer_zstd(
-        &self,
-        compression_level: Option<i32>,
-    ) -> Result<tar::Builder<ZstdLayerWriter>> {
-        Ok(tar::Builder::new(ZstdLayerWriter::new(
-            &self.dir,
-            compression_level,
-        )?))
+    pub fn create_layer_zstd(&self, compression_level: Option<i32>) -> Result<ZstdLayerWriter> {
+        ZstdLayerWriter::new(&self.dir, compression_level)
     }
 
     #[cfg(feature = "zstdmt")]
-    /// Create a tar output stream, backed by a zstd compressed blob
-    /// using multithreaded compression.
+    /// Create a writer for a new zstd+tar blob; the contents
+    /// are not parsed, but are expected to be a tarball.
+    /// The compression is multithreaded.
     ///
     /// The `n_workers` parameter specifies the number of threads to use for compression, per
     /// [zstd::Encoder::multithread]]
@@ -301,12 +297,8 @@ impl OciDir {
         &self,
         compression_level: Option<i32>,
         n_workers: u32,
-    ) -> Result<tar::Builder<ZstdLayerWriter>> {
-        Ok(tar::Builder::new(ZstdLayerWriter::multithread(
-            &self.dir,
-            compression_level,
-            n_workers,
-        )?))
+    ) -> Result<ZstdLayerWriter> {
+        ZstdLayerWriter::multithread(&self.dir, compression_level, n_workers)
     }
 
     /// Add a layer to the top of the image stack.  The firsh pushed layer becomes the root.
