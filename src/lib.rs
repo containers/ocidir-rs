@@ -387,9 +387,7 @@ impl OciDir {
 
     /// Returns `true` if the manifest is already present.
     pub fn has_manifest(&self, desc: &oci_spec::image::Descriptor) -> Result<bool> {
-        let Some(index) = self.read_index()? else {
-            return Ok(false);
-        };
+        let index = self.read_index()?;
         Ok(index
             .manifests()
             .iter()
@@ -417,11 +415,11 @@ impl OciDir {
     }
 
     /// Read the image index.
-    pub fn read_index(&self) -> Result<Option<ImageIndex>> {
+    pub fn read_index(&self) -> Result<ImageIndex> {
         let r = if let Some(index) = self.dir.open_optional("index.json")?.map(BufReader::new) {
-            Some(oci_image::ImageIndex::from_reader(index)?)
+            oci_image::ImageIndex::from_reader(index)?
         } else {
-            None
+            return Err(Error::MissingImageIndex);
         };
         Ok(r)
     }
@@ -445,21 +443,23 @@ impl OciDir {
             manifest.set_annotations(Some(annotations));
         }
 
-        let index = self.read_index()?;
-        let index = if let Some(mut index) = index {
-            let mut manifests = index.manifests().clone();
-            if let Some(tag) = tag {
-                manifests.retain(|d| !Self::descriptor_is_tagged(d, tag));
+        let index = match self.read_index() {
+            Ok(mut index) => {
+                let mut manifests = index.manifests().clone();
+                if let Some(tag) = tag {
+                    manifests.retain(|d| !Self::descriptor_is_tagged(d, tag));
+                }
+                manifests.push(manifest.clone());
+                index.set_manifests(manifests);
+                index
             }
-            manifests.push(manifest.clone());
-            index.set_manifests(manifests);
-            index
-        } else {
-            oci_image::ImageIndexBuilder::default()
+            Err(Error::MissingImageIndex) => oci_image::ImageIndexBuilder::default()
                 .schema_version(oci_image::SCHEMA_VERSION)
                 .manifests(vec![manifest.clone()])
-                .build()
-                .unwrap()
+                .build()?,
+            Err(e) => {
+                return Err(e);
+            }
         };
 
         self.dir
@@ -531,7 +531,7 @@ impl OciDir {
         &self,
         tag: &str,
     ) -> Result<Option<oci_image::Descriptor>> {
-        let idx = self.read_index()?.ok_or_else(|| Error::MissingImageIndex)?;
+        let idx = self.read_index()?;
         Ok(idx
             .manifests()
             .iter()
@@ -577,9 +577,7 @@ impl OciDir {
     /// Verify consistency of the index, its manifests, the config and blobs (all the latter)
     /// by verifying their descriptor.
     pub fn fsck(&self) -> Result<u64> {
-        let Some(index) = self.read_index()? else {
-            return Ok(0);
-        };
+        let index = self.read_index()?;
         let mut validated_blobs = HashSet::new();
         for manifest_descriptor in index.manifests() {
             let expected_sha256 = sha256_of_descriptor(manifest_descriptor)?;
@@ -823,7 +821,7 @@ mod tests {
             "349438e5faf763e8875b43de4d7101540ef4d865190336c2cc549a11f33f8d7c"
         );
         // Nothing referencing this blob yet
-        assert_eq!(w.fsck().unwrap(), 0);
+        assert!(matches!(w.fsck().unwrap_err(), Error::MissingImageIndex));
         assert!(w.has_blob(&root_layer_desc).unwrap());
 
         // Check that we don't find nonexistent blobs
@@ -844,7 +842,7 @@ mod tests {
         let config = w.write_config(config)?;
         manifest.set_config(config);
         w.replace_with_single_manifest(manifest.clone(), oci_image::Platform::default())?;
-        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 1);
+        assert_eq!(w.read_index().unwrap().manifests().len(), 1);
         assert_eq!(w.fsck().unwrap(), 3);
         // Also verify that corrupting a blob is found
         {
@@ -861,7 +859,7 @@ mod tests {
             assert_eq!(w.fsck().unwrap(), 3);
         }
 
-        let idx = w.read_index()?.unwrap();
+        let idx = w.read_index()?;
         let manifest_desc = idx.manifests().first().unwrap();
         let read_manifest = w.read_json_blob(manifest_desc).unwrap();
         assert_eq!(&read_manifest, &manifest);
@@ -870,7 +868,7 @@ mod tests {
             w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
         assert!(w.has_manifest(&desc).unwrap());
         // There's more than one now
-        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
+        assert_eq!(w.read_index().unwrap().manifests().len(), 2);
 
         assert!(w.find_manifest_with_tag("noent").unwrap().is_none());
         let found_via_tag = w.find_manifest_with_tag("latest").unwrap().unwrap();
@@ -890,7 +888,7 @@ mod tests {
             Some("latest"),
             oci_image::Platform::default(),
         )?;
-        assert_eq!(w.read_index().unwrap().unwrap().manifests().len(), 2);
+        assert_eq!(w.read_index().unwrap().manifests().len(), 2);
         assert_eq!(w.fsck().unwrap(), 6);
         Ok(())
     }
