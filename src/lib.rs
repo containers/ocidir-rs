@@ -11,7 +11,7 @@ use oci_spec::image::{
 };
 use olpc_cjson::CanonicalFormatter;
 use openssl::hash::{Hasher, MessageDigest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::fs::File;
@@ -57,6 +57,9 @@ pub enum Error {
     #[error("Cannot find the Image Index (index.json)")]
     /// Returned when the OCI Image Index (index.json) is missing
     MissingImageIndex,
+    #[error("Unexpected media type {media_type}")]
+    /// Returned when the OCI Image Index (index.json) is missing
+    UnexpectedMediaType { media_type: MediaType },
     #[error("error")]
     /// An unknown other error
     Other(Box<str>),
@@ -76,6 +79,11 @@ impl From<openssl::error::ErrorStack> for Error {
         Self::CryptographicError(value.to_string().into())
     }
 }
+
+// This is intentionally an empty struct
+// See https://github.com/opencontainers/image-spec/blob/main/manifest.md#guidance-for-an-empty-descriptor
+#[derive(Serialize, Deserialize)]
+struct EmptyDescriptor {}
 
 /// Completed blob metadata
 #[derive(Debug)]
@@ -161,32 +169,6 @@ pub struct OciDir {
     blobs_dir: Dir,
 }
 
-/// Create a dummy config descriptor.
-/// Our API right now always mutates a manifest, which means we need
-/// a "valid" manifest, which requires a "valid" config descriptor.
-/// This digest should never actually be used for anything.
-fn empty_config_descriptor() -> oci_image::Descriptor {
-    oci_image::DescriptorBuilder::default()
-        .media_type(MediaType::ImageConfig)
-        .size(7023u64)
-        .digest(
-            Sha256Digest::from_str(
-                "a5b2b2c507a0944348e0303114d8d93aaaa081732b86451d9bce1f432a537bc7",
-            )
-            .unwrap(),
-        )
-        .build()
-        .unwrap()
-}
-
-/// Generate a "valid" empty manifest.  See above.
-pub fn new_empty_manifest() -> oci_image::ImageManifestBuilder {
-    oci_image::ImageManifestBuilder::default()
-        .schema_version(oci_image::SCHEMA_VERSION)
-        .config(empty_config_descriptor())
-        .layers(Vec::new())
-}
-
 fn sha256_of_descriptor(desc: &Descriptor) -> Result<&str> {
     desc.as_digest_sha256()
         .ok_or_else(|| Error::UnsupportedDigestAlgorithm {
@@ -195,6 +177,40 @@ fn sha256_of_descriptor(desc: &Descriptor) -> Result<&str> {
 }
 
 impl OciDir {
+    /// Create an empty config descriptor.
+    /// See https://github.com/opencontainers/image-spec/blob/main/manifest.md#guidance-for-an-empty-descriptor
+    /// Our API right now always mutates a manifest, which means we need
+    /// a "valid" manifest, which requires a "valid" config descriptor.
+    fn empty_config_descriptor(&self) -> Result<oci_image::Descriptor> {
+        let empty_descriptor = oci_image::DescriptorBuilder::default()
+            .media_type(MediaType::EmptyJSON)
+            .size(2_u32)
+            .digest(Sha256Digest::from_str(
+                "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            )?)
+            .data("e30=")
+            .build()?;
+
+        if !self
+            .dir
+            .exists(OciDir::parse_descriptor_to_path(&empty_descriptor)?)
+        {
+            let mut blob = self.create_blob()?;
+            serde_json::to_writer(&mut blob, &EmptyDescriptor {})?;
+            blob.complete_verified_as(&empty_descriptor)?;
+        }
+
+        Ok(empty_descriptor)
+    }
+
+    /// Generate a valid empty manifest.  See above.
+    pub fn new_empty_manifest(&self) -> Result<oci_image::ImageManifestBuilder> {
+        Ok(oci_image::ImageManifestBuilder::default()
+            .schema_version(oci_image::SCHEMA_VERSION)
+            .config(self.empty_config_descriptor()?)
+            .layers(Vec::new()))
+    }
+
     /// Open the OCI directory at the target path; if it does not already
     /// have the standard OCI metadata, it is created.
     pub fn ensure(dir: Dir) -> Result<Self> {
@@ -548,7 +564,19 @@ impl OciDir {
         validated: &mut HashSet<Box<str>>,
     ) -> Result<()> {
         let config_digest = sha256_of_descriptor(manifest.config())?;
-        let _: ImageConfiguration = self.read_json_blob(manifest.config())?;
+        match manifest.config().media_type() {
+            MediaType::ImageConfig => {
+                let _: ImageConfiguration = self.read_json_blob(manifest.config())?;
+            }
+            MediaType::EmptyJSON => {
+                let _: EmptyDescriptor = self.read_json_blob(manifest.config())?;
+            }
+            media_type => {
+                return Err(Error::UnexpectedMediaType {
+                    media_type: media_type.clone(),
+                })
+            }
+        }
         validated.insert(config_digest.into());
         for layer in manifest.layers() {
             let expected = sha256_of_descriptor(layer)?;
@@ -833,7 +861,7 @@ mod tests {
             ))
             .unwrap());
 
-        let mut manifest = new_empty_manifest().build().unwrap();
+        let mut manifest = w.new_empty_manifest()?.build()?;
         let mut config = oci_image::ImageConfigurationBuilder::default()
             .build()
             .unwrap();
@@ -877,7 +905,7 @@ mod tests {
         let mut layerw = w.create_gzip_layer(None)?;
         layerw.write_all(b"pretend this is an updated tarball")?;
         let root_layer = layerw.complete()?;
-        let mut manifest = new_empty_manifest().build().unwrap();
+        let mut manifest = w.new_empty_manifest()?.build()?;
         let mut config = oci_image::ImageConfigurationBuilder::default()
             .build()
             .unwrap();
@@ -940,6 +968,21 @@ mod tests {
             o => panic!("Unexpected error {o}"),
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_empty_manifest() -> Result<()> {
+        let td = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        let w = OciDir::ensure(td.try_clone()?)?;
+
+        let manifest = w.new_empty_manifest()?.build()?;
+        let desc: Descriptor =
+            w.insert_manifest(manifest, Some("latest"), oci_image::Platform::default())?;
+        assert!(w.has_manifest(&desc).unwrap());
+
+        // We expect two validated blobs: the manifest and the image configuration
+        assert_eq!(w.fsck()?, 2);
         Ok(())
     }
 }
