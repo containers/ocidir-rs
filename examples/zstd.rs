@@ -4,11 +4,11 @@ fn main() {
 
     use cap_tempfile::TempDir;
     use oci_spec::image::Platform;
-    use ocidir::{new_empty_manifest, OciDir};
+    use ocidir::OciDir;
     let dir = TempDir::new(ocidir::cap_std::ambient_authority()).unwrap();
     let oci_dir = OciDir::ensure(dir.try_clone().unwrap()).unwrap();
 
-    let mut manifest = new_empty_manifest().build().unwrap();
+    let mut manifest = oci_dir.new_empty_manifest().unwrap().build().unwrap();
     let mut config = ocidir::oci_spec::image::ImageConfigurationBuilder::default()
         .build()
         .unwrap();
