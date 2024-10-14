@@ -58,7 +58,7 @@ pub enum Error {
     /// Returned when the OCI Image Index (index.json) is missing
     MissingImageIndex,
     #[error("Unexpected media type {media_type}")]
-    /// Returned when the OCI Image Index (index.json) is missing
+    /// Returned when there's an unexpected media type
     UnexpectedMediaType { media_type: MediaType },
     #[error("error")]
     /// An unknown other error
