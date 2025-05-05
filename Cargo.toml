@@ -19,12 +19,12 @@ serde = { features = ["derive"], version = "1.0.125" }
 serde_json = "1.0.64"
 tar = "0.4.38"
 thiserror = "2"
-oci-spec = "0.7.0"
+oci-spec = "0.8.0"
 zstd = { version = "0.13.2", optional = true }
 
 [dev-dependencies]
-anyhow = "1.0.89"
-cap-tempfile = "3.3.0"
+anyhow = "=1.0.89"
+cap-tempfile = "=3.3.0"
 
 [features]
 zstd = ["dep:zstd"]
