@@ -4,7 +4,7 @@
 //! Convenience binary for reading a JSON document on stdin and outputting the canonical JSON form
 //! on stdout.
 
-use olpc_cjson::CanonicalFormatter;
+use ocidir_cjson::CanonicalFormatter;
 use serde::Serialize;
 use serde_json::Serializer;
 use std::io;

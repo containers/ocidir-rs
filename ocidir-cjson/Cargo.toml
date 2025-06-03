@@ -1,12 +1,13 @@
 [package]
-name = "olpc-cjson"
-version = "0.1.4"
-description = "serde_json Formatter to serialize as OLPC-style canonical JSON"
-authors = ["iliana destroyer of worlds <iweller@amazon.com>"]
+name = "ocidir-cjson"
+version = "0.0.0"
+publish = false
+description = "serde_json Formatter to serialize as OLPC-style canonical JSON (fork of olpc-cjson)"
+#authors = ["iliana destroyer of worlds <iweller@amazon.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/awslabs/tough"
+repository = "https://github.com/containers/ocidir-rs"
 keywords = ["json"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 serde = "1"

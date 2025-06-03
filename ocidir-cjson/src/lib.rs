@@ -1,6 +1,8 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! This is a fork of `olpc-cjson` that escapes ASCII control chars.
+//!
 //! `olpc-cjson` provides a [`serde_json::Formatter`] to serialize data as [canonical JSON], as
 //! defined by OLPC and used in [TUF].
 //!
@@ -8,18 +10,13 @@
 //! [canonical JSON]: http://wiki.laptop.org/go/Canonical_JSON
 //! [TUF]: https://theupdateframework.github.io/
 //!
-//! OLPC's canonical JSON specification is subtly different from other "canonical JSON"
-//! specifications, and is also not a strict subset of JSON (specifically, ASCII control characters
-//! 0x00&ndash;0x1f are printed literally, which is not valid JSON). Therefore, `serde_json` cannot
-//! necessarily deserialize JSON produced by this formatter.
-//!
 //! This crate is not developed or endorsed by OLPC; use of the term is solely to distinguish this
 //! specification of canonical JSON from [other specifications of canonical JSON][xkcd].
 //!
 //! [xkcd]: https://xkcd.com/927/
 //!
 //! ```rust
-//! use olpc_cjson::CanonicalFormatter;
+//! use ocidir_cjson::CanonicalFormatter;
 //! use serde::Serialize;
 //! use serde_json::json;
 //!

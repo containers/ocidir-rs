@@ -1,3 +1,6 @@
+[workspace]
+members = ["ocidir-cjson"]
+
 [package]
 name = "ocidir"
 description = "A Rust library for reading and writing OCI (opencontainers) layout directories"
