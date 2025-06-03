@@ -185,29 +185,12 @@ impl Formatter for CanonicalFormatter {
         })
     }
 
-    // Only quotes and backslashes are escaped in canonical JSON.
     fn write_char_escape<W: Write + ?Sized>(
         &mut self,
         writer: &mut W,
         char_escape: CharEscape,
     ) -> Result<()> {
-        match char_escape {
-            CharEscape::Quote | CharEscape::ReverseSolidus => {
-                self.writer(writer).write_all(b"\\")?;
-            }
-            _ => {}
-        }
-        self.writer(writer).write_all(&[match char_escape {
-            CharEscape::Quote => b'\"',
-            CharEscape::ReverseSolidus => b'\\',
-            CharEscape::Solidus => b'/',
-            CharEscape::Backspace => b'\x08',
-            CharEscape::FormFeed => b'\x0c',
-            CharEscape::LineFeed => b'\n',
-            CharEscape::CarriageReturn => b'\r',
-            CharEscape::Tab => b'\t',
-            CharEscape::AsciiControl(byte) => byte,
-        }])
+        CompactFormatter.write_char_escape(&mut self.writer(writer), char_escape)
     }
 
     wrapper!(begin_array);
@@ -293,6 +276,7 @@ mod tests {
     use crate::CanonicalFormatter;
     use serde::Serialize;
     use serde_json::Serializer;
+    use sha2::{Digest, Sha256};
     use std::io::Result;
 
     /// Small wrapper around the `serde_json` json! macro to encode the value as canonical JSON.
@@ -330,69 +314,42 @@ mod tests {
         Ok(())
     }
 
-    /// Canonical JSON prints literal ASCII control characters instead of escaping them. Check
-    /// ASCII 0x00 - 0x1f, plus backslash and double quote (the only escaped characters).
-    ///
-    /// The accepted strings were validated with securesystemslib, commit
-    /// f466266014aff529510216b8c2f8c8f39de279ec.
-    ///
-    /// ```python
-    /// import securesystemslib.formats
-    /// encode = securesystemslib.formats.encode_canonical
-    /// for c in range(0x20):
-    ///     print(repr(encode(chr(c))))
-    /// print(repr(encode('\\')))
-    /// print(repr(encode('"')))
-    /// ```
-    ///
-    /// This can be a little difficult to wrap a mental string parser around. But you can verify
-    /// that all the control characters result in a 3-byte JSON string:
-    ///
-    /// ```python
-    /// >>> all(map(lambda c: len(encode(chr(c))) == 3, range(0x20)))
-    /// True
-    /// ```
     #[test]
-    fn ascii_control_characters() -> Result<()> {
-        assert_eq!(encode!("\x00")?, b"\"\x00\"");
-        assert_eq!(encode!("\x01")?, b"\"\x01\"");
-        assert_eq!(encode!("\x02")?, b"\"\x02\"");
-        assert_eq!(encode!("\x03")?, b"\"\x03\"");
-        assert_eq!(encode!("\x04")?, b"\"\x04\"");
-        assert_eq!(encode!("\x05")?, b"\"\x05\"");
-        assert_eq!(encode!("\x06")?, b"\"\x06\"");
-        assert_eq!(encode!("\x07")?, b"\"\x07\"");
-        assert_eq!(encode!("\x08")?, b"\"\x08\"");
-        assert_eq!(encode!("\x09")?, b"\"\x09\"");
-        assert_eq!(encode!("\x0a")?, b"\"\x0a\"");
-        assert_eq!(encode!("\x0b")?, b"\"\x0b\"");
-        assert_eq!(encode!("\x0c")?, b"\"\x0c\"");
-        assert_eq!(encode!("\x0d")?, b"\"\x0d\"");
-        assert_eq!(encode!("\x0e")?, b"\"\x0e\"");
-        assert_eq!(encode!("\x0f")?, b"\"\x0f\"");
-        assert_eq!(encode!("\x10")?, b"\"\x10\"");
-        assert_eq!(encode!("\x11")?, b"\"\x11\"");
-        assert_eq!(encode!("\x12")?, b"\"\x12\"");
-        assert_eq!(encode!("\x13")?, b"\"\x13\"");
-        assert_eq!(encode!("\x14")?, b"\"\x14\"");
-        assert_eq!(encode!("\x15")?, b"\"\x15\"");
-        assert_eq!(encode!("\x16")?, b"\"\x16\"");
-        assert_eq!(encode!("\x17")?, b"\"\x17\"");
-        assert_eq!(encode!("\x18")?, b"\"\x18\"");
-        assert_eq!(encode!("\x19")?, b"\"\x19\"");
-        assert_eq!(encode!("\x1a")?, b"\"\x1a\"");
-        assert_eq!(encode!("\x1b")?, b"\"\x1b\"");
-        assert_eq!(encode!("\x1c")?, b"\"\x1c\"");
-        assert_eq!(encode!("\x1d")?, b"\"\x1d\"");
-        assert_eq!(encode!("\x1e")?, b"\"\x1e\"");
-        assert_eq!(encode!("\x1f")?, b"\"\x1f\"");
+    fn test_from_testdata() -> Result<()> {
+        use cap_std;
+        let amb = cap_std::ambient_authority();
+        let dir = cap_std::fs::Dir::open_ambient_dir(".", amb)?;
+        let dir = dir.open_dir("testdata")?;
+        for entry in dir.entries()? {
+            let entry = entry?;
+            let filename = entry.file_name();
+            let filename = filename.to_str().unwrap();
+            match filename {
+                "errors" => continue,
+                "LICENSE" => continue,
+                _ => {}
+            }
 
-        // Try to trigger a panic in our unsafe blocks (from_utf8_unchecked)...
-        assert_eq!(encode!({"\t": "\n"})?, b"{\"\t\":\"\n\"}");
+            let json: serde_json::Value = serde_json::from_reader(entry.open()?)?;
+            let enc = encode!(json)?;
+            let mut sha256 = Sha256::new();
+            sha256.update(&enc);
+            // testdata sha256sum are computed with a trailing \n
+            sha256.update("\n");
+            let filename = filename.trim_end_matches(".json");
+            let hash = format!("{:x}", sha256.finalize());
+            assert_eq!(filename, hash);
 
-        assert_eq!(encode!("\\")?, b"\"\\\\\"");
-        assert_eq!(encode!("\"")?, b"\"\\\"\"");
+            let json2: serde_json::Value = serde_json::from_slice(&enc)?;
+            assert_eq!(json, json2)
+        }
 
+        let dir = dir.open_dir("errors")?;
+        for entry in dir.entries()? {
+            let entry = entry?;
+            let json: serde_json::Value = serde_json::from_reader(entry.open()?)?;
+            assert!(encode!(json).is_err());
+        }
         Ok(())
     }
 
