@@ -9,7 +9,6 @@ use oci_spec::image::{
     self as oci_image, Descriptor, Digest, ImageConfiguration, ImageIndex, ImageManifest,
     Sha256Digest,
 };
-use olpc_cjson::CanonicalFormatter;
 use openssl::hash::{Hasher, MessageDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -19,6 +18,9 @@ use std::io::{prelude::*, BufReader};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
+
+pub mod json;
+use json::JsonCanonicalSerialize;
 
 // Re-export our dependencies that are used as part of the public API.
 pub use cap_std_ext::cap_std;
@@ -77,6 +79,12 @@ impl From<openssl::error::Error> for Error {
 impl From<openssl::error::ErrorStack> for Error {
     fn from(value: openssl::error::ErrorStack) -> Self {
         Self::CryptographicError(value.to_string().into())
+    }
+}
+
+impl From<anyhow::Error> for Error {
+    fn from(value: anyhow::Error) -> Self {
+        Self::Other(value.to_string().into())
     }
 }
 
@@ -269,8 +277,7 @@ impl OciDir {
         media_type: oci_image::MediaType,
     ) -> Result<oci_image::DescriptorBuilder> {
         let mut w = BlobWriter::new(&self.dir)?;
-        let mut ser = serde_json::Serializer::with_formatter(&mut w, CanonicalFormatter::new());
-        v.serialize(&mut ser)?;
+        v.to_json_canonical_writer(&mut w)?;
         let blob = w.complete()?;
         Ok(blob.descriptor().media_type(media_type))
     }
@@ -479,10 +486,8 @@ impl OciDir {
         };
 
         self.dir
-            .atomic_replace_with("index.json", |mut w| -> Result<()> {
-                let mut ser =
-                    serde_json::Serializer::with_formatter(&mut w, CanonicalFormatter::new());
-                index.serialize(&mut ser)?;
+            .atomic_replace_with("index.json", |w| -> Result<()> {
+                index.to_json_canonical_writer(w)?;
                 Ok(())
             })?;
         Ok(manifest)
@@ -519,10 +524,8 @@ impl OciDir {
             .build()
             .unwrap();
         self.dir
-            .atomic_replace_with("index.json", |mut w| -> Result<()> {
-                let mut ser =
-                    serde_json::Serializer::with_formatter(&mut w, CanonicalFormatter::new());
-                index_data.serialize(&mut ser)?;
+            .atomic_replace_with("index.json", |w| -> Result<()> {
+                index_data.to_json_canonical_writer(w)?;
                 Ok(())
             })?;
         Ok(())

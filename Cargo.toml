@@ -13,7 +13,6 @@ keywords = ["oci", "opencontainers", "docker", "podman", "containers"]
 [dependencies]
 camino = "1.0.4"
 chrono = "0.4.19"
-olpc-cjson = "0.1.1"
 cap-std-ext = "4.0"
 flate2 = { features = ["zlib"], default-features = false, version = "1.0.20" }
 hex = "0.4.3"
@@ -24,6 +23,8 @@ tar = "0.4.38"
 thiserror = "2"
 oci-spec = "0.7.0"
 zstd = { version = "0.13.2", optional = true }
+anyhow = "1.0.89"
+ocidir-cjson = { version = "0.0.0", path = "ocidir-cjson" }
 
 [dev-dependencies]
 anyhow = "1.0.89"
