@@ -359,6 +359,25 @@ impl OciDir {
         description: &str,
         created: chrono::DateTime<chrono::Utc>,
     ) {
+        let history = oci_image::HistoryBuilder::default()
+            .created(created.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            .created_by(description.to_string())
+            .build()
+            .unwrap();
+        self.push_layer_with_history_annotated(manifest, config, layer, annotations, Some(history));
+    }
+
+    /// Add a layer to the top of the image stack with optional annotations and desired history entry.
+    ///
+    /// This is otherwise equivalent to [`Self::push_layer_annotated`].
+    pub fn push_layer_with_history_annotated(
+        &self,
+        manifest: &mut oci_image::ImageManifest,
+        config: &mut oci_image::ImageConfiguration,
+        layer: Layer,
+        annotations: Option<impl Into<HashMap<String, String>>>,
+        history: Option<oci_image::History>,
+    ) {
         let mut builder = layer.descriptor();
         if let Some(annotations) = annotations {
             builder = builder.annotations(annotations);
@@ -370,12 +389,26 @@ impl OciDir {
             .diff_ids_mut()
             .push(layer.uncompressed_sha256_as_digest().to_string());
         config.set_rootfs(rootfs);
-        let h = oci_image::HistoryBuilder::default()
-            .created(created.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-            .created_by(description.to_string())
-            .build()
-            .unwrap();
-        config.history_mut().push(h);
+        let history = if let Some(history) = history {
+            history
+        } else {
+            oci_image::HistoryBuilder::default().build().unwrap()
+        };
+        config.history_mut().push(history);
+    }
+
+    /// Add a layer to the top of the image stack with desired history entry.
+    ///
+    /// This is otherwise equivalent to [`Self::push_layer`].
+    pub fn push_layer_with_history(
+        &self,
+        manifest: &mut oci_image::ImageManifest,
+        config: &mut oci_image::ImageConfiguration,
+        layer: Layer,
+        history: Option<oci_image::History>,
+    ) {
+        let annotations: Option<HashMap<_, _>> = None;
+        self.push_layer_with_history_annotated(manifest, config, layer, annotations, history);
     }
 
     fn parse_descriptor_to_path(desc: &oci_spec::image::Descriptor) -> Result<PathBuf> {
@@ -797,6 +830,7 @@ where
 #[cfg(test)]
 mod tests {
     use cap_std::fs::OpenOptions;
+    use oci_spec::image::HistoryBuilder;
 
     use super::*;
 
@@ -867,6 +901,16 @@ mod tests {
             .unwrap();
         let annotations: Option<HashMap<String, String>> = None;
         w.push_layer(&mut manifest, &mut config, root_layer, "root", annotations);
+        {
+            let history = config.history().first().unwrap();
+            assert_eq!(history.created_by().as_ref().unwrap(), "root");
+            let created = history.created().as_deref().unwrap();
+            let ts = chrono::DateTime::parse_from_rfc3339(created)
+                .unwrap()
+                .to_utc();
+            let now = chrono::offset::Utc::now();
+            assert_eq!(now.years_since(ts).unwrap(), 0);
+        }
         let config = w.write_config(config)?;
         manifest.set_config(config);
         w.replace_with_single_manifest(manifest.clone(), oci_image::Platform::default())?;
@@ -983,6 +1027,32 @@ mod tests {
 
         // We expect two validated blobs: the manifest and the image configuration
         assert_eq!(w.fsck()?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_layer_with_history() -> Result<()> {
+        let td = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        let w = OciDir::ensure(td.try_clone()?)?;
+
+        let mut manifest = w.new_empty_manifest()?.build()?;
+        let mut config = oci_image::ImageConfigurationBuilder::default()
+            .build()
+            .unwrap();
+        let mut layerw = w.create_gzip_layer(None)?;
+        layerw.write_all(b"pretend this is a tarball")?;
+        let root_layer = layerw.complete()?;
+
+        let history = HistoryBuilder::default()
+            .created_by("/bin/pretend-tar")
+            .build()
+            .unwrap();
+        w.push_layer_with_history(&mut manifest, &mut config, root_layer, Some(history));
+        {
+            let history = config.history().first().unwrap();
+            assert_eq!(history.created_by().as_deref().unwrap(), "/bin/pretend-tar");
+            assert_eq!(history.created().as_ref(), None);
+        }
         Ok(())
     }
 }
