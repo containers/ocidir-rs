@@ -145,7 +145,7 @@ pub struct BlobWriter<'a> {
     size: u64,
 }
 
-impl<'a> Debug for BlobWriter<'a> {
+impl Debug for BlobWriter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlobWriter")
             .field("target", &self.target)
@@ -698,7 +698,7 @@ impl<'a> BlobWriter<'a> {
     }
 }
 
-impl<'a> std::io::Write for BlobWriter<'a> {
+impl std::io::Write for BlobWriter<'_> {
     fn write(&mut self, srcbuf: &[u8]) -> std::io::Result<usize> {
         self.hash.update(srcbuf)?;
         self.target
@@ -735,7 +735,7 @@ impl<'a> GzipLayerWriter<'a> {
     }
 }
 
-impl<'a> std::io::Write for GzipLayerWriter<'a> {
+impl std::io::Write for GzipLayerWriter<'_> {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         self.0.write(data)
     }
@@ -781,7 +781,7 @@ impl<'a> ZstdLayerWriter<'a> {
 }
 
 #[cfg(feature = "zstd")]
-impl<'a> std::io::Write for ZstdLayerWriter<'a> {
+impl std::io::Write for ZstdLayerWriter<'_> {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         self.0.write(data)
     }
