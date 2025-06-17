@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+use canon_json::CanonicalFormatter;
 use cap_std::fs::{Dir, DirBuilderExt};
 use cap_std_ext::cap_tempfile;
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -9,7 +10,6 @@ use oci_spec::image::{
     self as oci_image, Descriptor, Digest, ImageConfiguration, ImageIndex, ImageManifest,
     Sha256Digest,
 };
-use olpc_cjson::CanonicalFormatter;
 use openssl::hash::{Hasher, MessageDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
