@@ -1,7 +1,7 @@
 [package]
 name = "ocidir"
 description = "A Rust library for reading and writing OCI (opencontainers) layout directories"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/containers/ocidir-rs"
@@ -18,7 +18,7 @@ serde = { features = ["derive"], version = "1.0.125" }
 serde_json = "1.0.64"
 tar = "0.4.38"
 thiserror = "2"
-oci-spec = "0.7.0"
+oci-spec = "0.8.0"
 zstd = { version = "0.13.2", optional = true }
 canon-json = "0.2.0"
 
