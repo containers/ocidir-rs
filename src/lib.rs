@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::fs::File;
-use std::io::{prelude::*, BufReader};
+use std::io::{prelude::*, BufReader, BufWriter};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -142,7 +142,7 @@ pub struct BlobWriter<'a> {
     /// Compute checksum
     hash: Hasher,
     /// Target file
-    target: Option<cap_tempfile::TempFile<'a>>,
+    target: Option<BufWriter<cap_tempfile::TempFile<'a>>>,
     size: u64,
 }
 
@@ -673,7 +673,7 @@ impl<'a> BlobWriter<'a> {
         Ok(Self {
             hash: Hasher::new(MessageDigest::sha256())?,
             // FIXME add ability to choose filename after completion
-            target: Some(cap_tempfile::TempFile::new(ocidir)?),
+            target: Some(BufWriter::new(cap_tempfile::TempFile::new(ocidir)?)),
             size: 0,
         })
     }
@@ -702,7 +702,7 @@ impl<'a> BlobWriter<'a> {
     fn complete_as(mut self, sha256_digest: &str) -> Result<Blob> {
         let destname = &format!("{}/{}", BLOBDIR, sha256_digest);
         let target = self.target.take().unwrap();
-        target.replace(destname)?;
+        target.into_inner().unwrap().replace(destname)?;
         Ok(Blob {
             sha256: Sha256Digest::from_str(sha256_digest).unwrap(),
             size: self.size,
@@ -718,14 +718,10 @@ impl<'a> BlobWriter<'a> {
 
 impl std::io::Write for BlobWriter<'_> {
     fn write(&mut self, srcbuf: &[u8]) -> std::io::Result<usize> {
-        self.hash.update(srcbuf)?;
-        self.target
-            .as_mut()
-            .unwrap()
-            .as_file_mut()
-            .write_all(srcbuf)?;
-        self.size += srcbuf.len() as u64;
-        Ok(srcbuf.len())
+        let written = self.target.as_mut().unwrap().write(srcbuf)?;
+        self.hash.update(&srcbuf[..written])?;
+        self.size += written as u64;
+        Ok(written)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -757,6 +753,7 @@ where
     }
 }
 
+/// A writer for a layer.
 pub struct LayerWriter<'a, W>
 where
     W: WriteComplete<BlobWriter<'a>>,
