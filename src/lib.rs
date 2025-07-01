@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![deny(missing_docs)]
 
 use canon_json::CanonicalFormatter;
 use cap_std::fs::{Dir, DirBuilderExt};
@@ -48,19 +49,35 @@ pub enum Error {
     CryptographicError(Box<str>),
     #[error("Expected digest {expected} but found {found}")]
     /// Returned when a digest does not match
-    DigestMismatch { expected: Box<str>, found: Box<str> },
+    DigestMismatch {
+        /// Expected digest value
+        expected: Box<str>,
+        /// Found digest value
+        found: Box<str>,
+    },
     #[error("Expected size {expected} but found {found}")]
     /// Returned when a descriptor digest does not match what was expected
-    SizeMismatch { expected: u64, found: u64 },
+    SizeMismatch {
+        /// Expected size value
+        expected: u64,
+        /// Found size value
+        found: u64,
+    },
     #[error("Expected digest algorithm sha256 but found {found}")]
     /// Returned when a digest algorithm is not supported
-    UnsupportedDigestAlgorithm { found: Box<str> },
+    UnsupportedDigestAlgorithm {
+        /// The unsupported digest algorithm that was found
+        found: Box<str>,
+    },
     #[error("Cannot find the Image Index (index.json)")]
     /// Returned when the OCI Image Index (index.json) is missing
     MissingImageIndex,
     #[error("Unexpected media type {media_type}")]
     /// Returned when there's an unexpected media type
-    UnexpectedMediaType { media_type: MediaType },
+    UnexpectedMediaType {
+        /// The unexpected media type that was encountered
+        media_type: MediaType,
+    },
     #[error("error")]
     /// An unknown other error
     Other(Box<str>),
@@ -731,6 +748,7 @@ impl std::io::Write for BlobWriter<'_> {
 
 /// A writer that can be finalized to return an inner writer.
 pub trait WriteComplete<W>: Write {
+    /// Complete the write operation and return the inner writer
     fn complete(self) -> std::io::Result<W>;
 }
 
@@ -767,6 +785,7 @@ impl<'a, W> LayerWriter<'a, W>
 where
     W: WriteComplete<BlobWriter<'a>>,
 {
+    /// Create a new LayerWriter with the given inner writer and media type
     pub fn new(inner: W, media_type: oci_image::MediaType) -> Self {
         Self {
             inner: Sha256Writer::new(inner),
@@ -775,6 +794,7 @@ where
         }
     }
 
+    /// Complete the layer writing and return the layer descriptor
     pub fn complete(self) -> Result<Layer> {
         let (uncompressed_sha256, enc) = self.inner.finish();
         let blob = enc.complete()?.complete()?;
